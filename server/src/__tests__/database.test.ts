@@ -16,7 +16,7 @@ describe('BotDatabase (node:sqlite)', () => {
     const paper = db.getPaperAccount();
 
     expect(risk.defaultLeverage).toBe(DEFAULT_RISK_CONFIG.defaultLeverage);
-    expect(strategy.minConfidence).toBe(65);
+    expect(strategy.minConfidence).toBe(72);
     expect(paper.balance).toBe(10_000);
     db.close();
   });

@@ -178,6 +178,29 @@ export class BotDatabase {
     this.ensureSetting('strategy_config', DEFAULT_STRATEGY_CONFIG, now);
     this.ensureSetting('trading_mode', 'PAPER' as TradingMode, now);
 
+    // Auto-migrate legacy aggressive settings to conservative low-risk defaults
+    const currentRisk = this.getSetting<Partial<RiskConfig>>('risk_config', {});
+    if (currentRisk.maxMarginPerTradePct === undefined || currentRisk.maxMarginPerTradePct > 12) {
+      this.saveRiskConfig({
+        ...DEFAULT_RISK_CONFIG,
+        ...currentRisk,
+        defaultLeverage: Math.min(currentRisk.defaultLeverage ?? 2, 3),
+        riskPerTradePct: Math.min(currentRisk.riskPerTradePct ?? 0.75, 1.0),
+        maxMarginPerTradePct: 10,
+        maxConcurrentPositions: Math.min(currentRisk.maxConcurrentPositions ?? 2, 2),
+        maxDailyLossPct: Math.min(currentRisk.maxDailyLossPct ?? 3, 3),
+      });
+    }
+
+    const currentStrat = this.getSetting<Partial<StrategyConfig>>('strategy_config', {});
+    if (currentStrat.minConfidence === undefined || currentStrat.minConfidence < 70) {
+      this.saveStrategyConfig({
+        ...DEFAULT_STRATEGY_CONFIG,
+        ...currentStrat,
+        minConfidence: 72,
+      });
+    }
+
     const existingPaper = this.db
       .prepare('SELECT id FROM paper_account WHERE id = 1')
       .get();

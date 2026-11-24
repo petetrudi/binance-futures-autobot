@@ -26,6 +26,9 @@ export function SettingsAndHistoryTab({
   const [liveConfirmed, setLiveConfirmed] = useState(settings.liveConfirmed);
   const [leverage, setLeverage] = useState(settings.risk.defaultLeverage);
   const [riskPerTradePct, setRiskPerTradePct] = useState(settings.risk.riskPerTradePct);
+  const [maxMarginPerTradePct, setMaxMarginPerTradePct] = useState(
+    settings.risk.maxMarginPerTradePct ?? 10,
+  );
   const [maxConcurrentPositions, setMaxConcurrentPositions] = useState(
     settings.risk.maxConcurrentPositions,
   );
@@ -53,6 +56,7 @@ export function SettingsAndHistoryTab({
     setLiveConfirmed(settings.liveConfirmed);
     setLeverage(settings.risk.defaultLeverage);
     setRiskPerTradePct(settings.risk.riskPerTradePct);
+    setMaxMarginPerTradePct(settings.risk.maxMarginPerTradePct ?? 10);
     setMaxConcurrentPositions(settings.risk.maxConcurrentPositions);
     setMaxDailyLossPct(settings.risk.maxDailyLossPct);
     setMinConfidence(settings.strategy.minConfidence);
@@ -76,6 +80,7 @@ export function SettingsAndHistoryTab({
       risk: {
         defaultLeverage: leverage,
         riskPerTradePct,
+        maxMarginPerTradePct,
         maxConcurrentPositions,
         maxDailyLossPct,
       },
@@ -159,6 +164,19 @@ export function SettingsAndHistoryTab({
                   step={0.1}
                   value={riskPerTradePct}
                   onChange={(e) => setRiskPerTradePct(Number(e.target.value))}
+                  className="font-mono-num mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
+                />
+              </label>
+
+              <label className="text-[11px] text-slate-400">
+                Max Margin / Trade (%)
+                <input
+                  type="number"
+                  min={2}
+                  max={50}
+                  step={1}
+                  value={maxMarginPerTradePct}
+                  onChange={(e) => setMaxMarginPerTradePct(Number(e.target.value))}
                   className="font-mono-num mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
                 />
               </label>

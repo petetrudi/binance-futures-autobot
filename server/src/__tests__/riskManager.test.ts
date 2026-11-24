@@ -114,12 +114,12 @@ describe('Risk management engine', () => {
       nowMs: Date.now(),
     });
 
-    // Equity = 10,000, risk = 1.5% = 150 USDT. SL distance = 3/150 = 2%.
-    // Raw notional = 150 / 0.02 = 7,500 USDT. Leverage 3x => margin = 2,500 USDT (<= 25% of 10,000 = 2,500).
-    // Qty = 7,500 / 150 = 50 SOL.
+    // Equity = 10,000, risk = 0.75% = 75 USDT. SL distance = 3/150 = 2%.
+    // Raw notional = 75 / 0.02 = 3,750 USDT. Max margin = 10% = 1,000 USDT. Leverage 2x => max notional = 2,000 USDT.
+    // Qty = 2,000 / 150 = 13.3 SOL. Required margin = 997.5 USDT (<= 1,000 USDT).
     expect(res.approved).toBe(true);
-    expect(res.quantity).toBe(50);
-    expect(res.requiredMarginUsdt).toBeLessThanOrEqual(2505);
+    expect(res.quantity).toBe(13.3);
+    expect(res.requiredMarginUsdt).toBeLessThanOrEqual(1005);
     expect(res.estimatedLiquidationPrice).toBeLessThan(147);
   });
 
@@ -164,7 +164,7 @@ describe('Risk management engine', () => {
       openPositions: [makeOpenPosition('BTCUSDT', 'LONG'), makeOpenPosition('ETHUSDT', 'LONG')],
       symbolFilter: SOL_FILTER,
       recentClosedSymbolTimes: new Map(),
-      riskConfig: DEFAULT_RISK_CONFIG,
+      riskConfig: { ...DEFAULT_RISK_CONFIG, maxConcurrentPositions: 5, maxSameDirectionPositions: 2 },
       botState: { killSwitchActive: false, running: true },
       nowMs: Date.now(),
     });

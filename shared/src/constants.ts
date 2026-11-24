@@ -1,12 +1,12 @@
 import type { RiskConfig, StrategyConfig } from './types.js';
 
 export const DEFAULT_RISK_CONFIG: RiskConfig = {
-  defaultLeverage: 3,
-  riskPerTradePct: 1.5,
-  maxMarginPerTradePct: 25,
-  maxConcurrentPositions: 3,
+  defaultLeverage: 2,
+  riskPerTradePct: 0.75,
+  maxMarginPerTradePct: 10,
+  maxConcurrentPositions: 2,
   maxSameDirectionPositions: 2,
-  maxDailyLossPct: 5,
+  maxDailyLossPct: 3,
   symbolCooldownMinutes: 45,
   takerFeePct: 0.05,
   slippagePct: 0.03,
@@ -15,7 +15,7 @@ export const DEFAULT_RISK_CONFIG: RiskConfig = {
 export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   minVolume24hUsdt: 20_000_000,
   scannerTopN: 8,
-  minConfidence: 65,
+  minConfidence: 72,
   minRiskReward: 1.8,
   minAdx: 18,
   stopLossAtrMultiplier: 1.6,
