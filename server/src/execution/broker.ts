@@ -355,7 +355,30 @@ export class BinanceFuturesBroker implements ExecutionBroker {
     riskConfig: RiskConfig,
   ): Promise<AccountSummary> {
     const info = await this.client.getAccountInfo();
-    const totalEquity = info.totalMarginBalance || info.totalWalletBalance + info.totalUnrealizedProfit;
+    const stats = this.db.getTradeStats(this.mode);
+    const cap =
+      riskConfig.maxAccountCapitalUsdt && riskConfig.maxAccountCapitalUsdt > 0
+        ? riskConfig.maxAccountCapitalUsdt
+        : 0;
+
+    let walletBalance = info.totalWalletBalance;
+    let availableBalance = info.availableBalance;
+    let unrealizedPnl = info.totalUnrealizedProfit;
+    let totalEquity =
+      info.totalMarginBalance || walletBalance + unrealizedPnl;
+    const isolatedMarginUsed = openPositions.reduce(
+      (s, p) => s + p.isolatedMargin,
+      0,
+    );
+
+    if (this.mode === 'TESTNET' && cap > 0) {
+      // Scale down Testnet faucet balance (Binance default $10,000) to user's targeted lead copy trader capital (e.g. $500)
+      walletBalance = cap + stats.netPnl;
+      unrealizedPnl = openPositions.reduce((s, p) => s + p.unrealizedPnl, 0);
+      totalEquity = walletBalance + unrealizedPnl;
+      availableBalance = Math.max(0, walletBalance - isolatedMarginUsed);
+    }
+
     const today = utcDayKey();
     if (!this.dayEquityAnchor || this.dayEquityAnchor.dayKey !== today) {
       this.dayEquityAnchor = { dayKey: today, equity: totalEquity };
@@ -364,14 +387,13 @@ export class BinanceFuturesBroker implements ExecutionBroker {
     const dailyPnl = totalEquity - startingDayEquity;
     const dailyPnlPct =
       startingDayEquity > 0 ? (dailyPnl / startingDayEquity) * 100 : 0;
-    const stats = this.db.getTradeStats(this.mode);
 
     return {
       mode: this.mode,
-      walletBalance: info.totalWalletBalance,
-      availableBalance: info.availableBalance,
-      isolatedMarginUsed: openPositions.reduce((s, p) => s + p.isolatedMargin, 0),
-      unrealizedPnl: info.totalUnrealizedProfit,
+      walletBalance,
+      availableBalance,
+      isolatedMarginUsed,
+      unrealizedPnl,
       totalEquity,
       startingDayEquity,
       dailyPnl,

@@ -69,8 +69,13 @@ export function OverviewTab({
       {/* KPI Cards */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-slate-800 bg-[#111827] p-4">
-          <div className="text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
-            Total Equity
+          <div className="flex items-center justify-between text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
+            <span>Total Equity</span>
+            {snapshot.settings.risk.maxAccountCapitalUsdt && (
+              <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-semibold tracking-normal text-cyan-300 normal-case">
+                Cap ${snapshot.settings.risk.maxAccountCapitalUsdt}
+              </span>
+            )}
           </div>
           <div className="font-mono-num mt-1 text-2xl font-bold text-slate-100">
             {fmtUsdt(account.totalEquity)}

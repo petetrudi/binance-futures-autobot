@@ -518,6 +518,7 @@ export class BotDatabase {
     totalTrades: number;
     winRatePct: number;
     profitFactor: number;
+    netPnl: number;
   } {
     const rows = this.db
       .prepare(
@@ -525,7 +526,7 @@ export class BotDatabase {
       )
       .all(mode) as Array<{ realized_pnl: number }>;
     if (rows.length === 0) {
-      return { totalTrades: 0, winRatePct: 0, profitFactor: 0 };
+      return { totalTrades: 0, winRatePct: 0, profitFactor: 0, netPnl: 0 };
     }
     let wins = 0;
     let grossWin = 0;
@@ -546,6 +547,7 @@ export class BotDatabase {
       totalTrades: rows.length,
       winRatePct,
       profitFactor,
+      netPnl: grossWin - grossLoss,
     };
   }
 
