@@ -116,12 +116,25 @@ export function evaluateRisk({
   }
 
   const stopDistPct = stopDist / entry;
-  const riskBudgetUsdt = Math.max(0, account.totalEquity) * (riskConfig.riskPerTradePct / 100);
+  const capitalCap =
+    riskConfig.maxAccountCapitalUsdt && riskConfig.maxAccountCapitalUsdt > 0
+      ? riskConfig.maxAccountCapitalUsdt
+      : undefined;
+
+  const effectiveEquity = capitalCap
+    ? Math.min(Math.max(0, account.totalEquity), capitalCap)
+    : Math.max(0, account.totalEquity);
+
+  const effectiveAvailable = capitalCap
+    ? Math.min(Math.max(0, account.availableBalance), capitalCap)
+    : Math.max(0, account.availableBalance);
+
+  const riskBudgetUsdt = effectiveEquity * (riskConfig.riskPerTradePct / 100);
   const desiredNotional = riskBudgetUsdt / stopDistPct;
 
   const maxMarginUsdt = Math.min(
-    account.availableBalance * 0.95,
-    account.totalEquity * (riskConfig.maxMarginPerTradePct / 100),
+    effectiveAvailable * 0.95,
+    effectiveEquity * (riskConfig.maxMarginPerTradePct / 100),
   );
   const maxNotionalByMargin = maxMarginUsdt * leverage;
   const targetNotional = Math.min(desiredNotional, maxNotionalByMargin);

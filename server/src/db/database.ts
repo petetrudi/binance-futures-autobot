@@ -180,7 +180,11 @@ export class BotDatabase {
 
     // Auto-migrate legacy aggressive settings to conservative low-risk defaults
     const currentRisk = this.getSetting<Partial<RiskConfig>>('risk_config', {});
-    if (currentRisk.maxMarginPerTradePct === undefined || currentRisk.maxMarginPerTradePct > 12) {
+    if (
+      currentRisk.maxMarginPerTradePct === undefined ||
+      currentRisk.maxMarginPerTradePct > 12 ||
+      !currentRisk.maxAccountCapitalUsdt
+    ) {
       this.saveRiskConfig({
         ...DEFAULT_RISK_CONFIG,
         ...currentRisk,
@@ -189,6 +193,7 @@ export class BotDatabase {
         maxMarginPerTradePct: 10,
         maxConcurrentPositions: Math.min(currentRisk.maxConcurrentPositions ?? 2, 2),
         maxDailyLossPct: Math.min(currentRisk.maxDailyLossPct ?? 3, 3),
+        maxAccountCapitalUsdt: currentRisk.maxAccountCapitalUsdt ?? 500,
       });
     }
 
@@ -202,14 +207,20 @@ export class BotDatabase {
     }
 
     const existingPaper = this.db
-      .prepare('SELECT id FROM paper_account WHERE id = 1')
-      .get();
+      .prepare('SELECT id, balance FROM paper_account WHERE id = 1')
+      .get() as { id: number; balance: number } | undefined;
     if (!existingPaper) {
       this.db
         .prepare(
           'INSERT INTO paper_account (id, balance, starting_day_equity, day_key, updated_at) VALUES (1, ?, ?, ?, ?)',
         )
-        .run(10_000, 10_000, utcDayKey(now), now);
+        .run(500, 500, utcDayKey(now), now);
+    } else if (existingPaper.balance === 10_000) {
+      this.db
+        .prepare(
+          'UPDATE paper_account SET balance = 500, starting_day_equity = 500 WHERE id = 1',
+        )
+        .run();
     }
   }
 

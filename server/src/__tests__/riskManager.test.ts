@@ -114,12 +114,15 @@ describe('Risk management engine', () => {
       nowMs: Date.now(),
     });
 
-    // Equity = 10,000, risk = 0.75% = 75 USDT. SL distance = 3/150 = 2%.
-    // Raw notional = 75 / 0.02 = 3,750 USDT. Max margin = 10% = 1,000 USDT. Leverage 2x => max notional = 2,000 USDT.
-    // Qty = 2,000 / 150 = 13.3 SOL. Required margin = 997.5 USDT (<= 1,000 USDT).
+    // Working capital cap = 500 USDT (lead copy trading setup).
+    // Risk = 0.75% = 3.75 USDT. SL distance = 3/150 = 2%.
+    // Desired notional = 3.75 / 0.02 = 187.5 USDT.
+    // Max margin = 10% of 500 = 50 USDT. Leverage 2x => max notional = 100 USDT.
+    // Target notional = min(187.5, 100) = 100 USDT.
+    // Qty = 100 / 150 = 0.6 SOL. Required margin = 45 USDT (<= 50 USDT).
     expect(res.approved).toBe(true);
-    expect(res.quantity).toBe(13.3);
-    expect(res.requiredMarginUsdt).toBeLessThanOrEqual(1005);
+    expect(res.quantity).toBe(0.6);
+    expect(res.requiredMarginUsdt).toBeLessThanOrEqual(51);
     expect(res.estimatedLiquidationPrice).toBeLessThan(147);
   });
 

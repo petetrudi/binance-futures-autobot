@@ -10,6 +10,7 @@ export const DEFAULT_RISK_CONFIG: RiskConfig = {
   symbolCooldownMinutes: 45,
   takerFeePct: 0.05,
   slippagePct: 0.03,
+  maxAccountCapitalUsdt: 500,
 };
 
 export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {

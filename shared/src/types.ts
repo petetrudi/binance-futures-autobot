@@ -183,6 +183,7 @@ export interface RiskConfig {
   symbolCooldownMinutes: number;
   takerFeePct: number;
   slippagePct: number;
+  maxAccountCapitalUsdt?: number;
 }
 
 export interface StrategyConfig {

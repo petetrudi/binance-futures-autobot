@@ -29,6 +29,9 @@ export function SettingsAndHistoryTab({
   const [maxMarginPerTradePct, setMaxMarginPerTradePct] = useState(
     settings.risk.maxMarginPerTradePct ?? 10,
   );
+  const [maxAccountCapitalUsdt, setMaxAccountCapitalUsdt] = useState(
+    settings.risk.maxAccountCapitalUsdt ?? 500,
+  );
   const [maxConcurrentPositions, setMaxConcurrentPositions] = useState(
     settings.risk.maxConcurrentPositions,
   );
@@ -49,7 +52,7 @@ export function SettingsAndHistoryTab({
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [telegramBotToken, setTelegramBotToken] = useState('');
   const [telegramChatId, setTelegramChatId] = useState('');
-  const [paperResetAmount, setPaperResetAmount] = useState(10_000);
+  const [paperResetAmount, setPaperResetAmount] = useState(500);
 
   useEffect(() => {
     setMode(settings.mode);
@@ -57,6 +60,7 @@ export function SettingsAndHistoryTab({
     setLeverage(settings.risk.defaultLeverage);
     setRiskPerTradePct(settings.risk.riskPerTradePct);
     setMaxMarginPerTradePct(settings.risk.maxMarginPerTradePct ?? 10);
+    setMaxAccountCapitalUsdt(settings.risk.maxAccountCapitalUsdt ?? 500);
     setMaxConcurrentPositions(settings.risk.maxConcurrentPositions);
     setMaxDailyLossPct(settings.risk.maxDailyLossPct);
     setMinConfidence(settings.strategy.minConfidence);
@@ -81,6 +85,7 @@ export function SettingsAndHistoryTab({
         defaultLeverage: leverage,
         riskPerTradePct,
         maxMarginPerTradePct,
+        maxAccountCapitalUsdt: maxAccountCapitalUsdt > 0 ? maxAccountCapitalUsdt : undefined,
         maxConcurrentPositions,
         maxDailyLossPct,
       },
@@ -177,6 +182,20 @@ export function SettingsAndHistoryTab({
                   step={1}
                   value={maxMarginPerTradePct}
                   onChange={(e) => setMaxMarginPerTradePct(Number(e.target.value))}
+                  className="font-mono-num mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
+                />
+              </label>
+
+              <label className="text-[11px] text-slate-400">
+                Lead Trader Capital ($)
+                <input
+                  type="number"
+                  min={50}
+                  max={100000}
+                  step={50}
+                  value={maxAccountCapitalUsdt}
+                  onChange={(e) => setMaxAccountCapitalUsdt(Number(e.target.value))}
+                  placeholder="500"
                   className="font-mono-num mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
                 />
               </label>
