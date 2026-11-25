@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import type { CandleChartResponse, Timeframe } from '@bot/shared';
 import { BacktestTab } from './components/BacktestTab.js';
+import { ChartModal } from './components/ChartModal.js';
 import { NewsTab } from './components/NewsTab.js';
 import { OverviewTab } from './components/OverviewTab.js';
 import { ScannerTab } from './components/ScannerTab.js';
@@ -50,6 +51,7 @@ export function App() {
   const [interval, setIntervalState] = useState<Timeframe>('15m');
   const [chartData, setChartData] = useState<CandleChartResponse | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
+  const [isChartModalOpen, setIsChartModalOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -150,6 +152,10 @@ export function App() {
             onIntervalChange={setIntervalState}
             onScanNow={scanNow}
             onClosePosition={closePosition}
+            onOpenChart={(sym) => {
+              setSelectedSymbol(sym);
+              setIsChartModalOpen(true);
+            }}
           />
         )}
 
@@ -160,7 +166,7 @@ export function App() {
             onScanNow={scanNow}
             onInspectChart={(sym) => {
               setSelectedSymbol(sym);
-              setTab('overview');
+              setIsChartModalOpen(true);
             }}
           />
         )}
@@ -184,6 +190,20 @@ export function App() {
           />
         )}
       </main>
+
+      {/* Realtime Candlestick Chart Modal - opens when any coin is clicked */}
+      <ChartModal
+        isOpen={isChartModalOpen}
+        onClose={() => setIsChartModalOpen(false)}
+        symbol={selectedSymbol}
+        interval={interval}
+        chartData={chartData}
+        loading={chartLoading}
+        activePosition={snapshot.positions.find((p) => p.symbol === selectedSymbol) ?? null}
+        selectedSignal={snapshot.signals.find((s) => s.symbol === selectedSymbol) ?? null}
+        onIntervalChange={setIntervalState}
+        onClosePosition={closePosition}
+      />
     </div>
   );
 }
