@@ -353,43 +353,70 @@ export class BinanceFuturesBroker implements ExecutionBroker {
     openPositions: Position[],
     riskConfig: RiskConfig,
   ): Promise<AccountSummary> {
-    const info = await this.client.getAccountInfo();
     const stats = this.db.getTradeStats(this.mode);
     const cap =
       riskConfig.maxAccountCapitalUsdt && riskConfig.maxAccountCapitalUsdt > 0
         ? riskConfig.maxAccountCapitalUsdt
         : 0;
-
-    let walletBalance = info.totalWalletBalance;
-    let availableBalance = info.availableBalance;
-    let unrealizedPnl = info.totalUnrealizedProfit;
-    let totalEquity =
-      info.totalMarginBalance || walletBalance + unrealizedPnl;
     const isolatedMarginUsed = openPositions.reduce(
       (s, p) => s + p.isolatedMargin,
       0,
     );
+    const liveOpenUnrealized = openPositions.reduce(
+      (s, p) => s + p.unrealizedPnl,
+      0,
+    );
 
-    let initialCapitalUsdt: number;
-    let baseline = this.db.getExchangeBaselineWallet(this.mode);
-    if (baseline === null) {
-      baseline = info.totalWalletBalance - stats.netPnl;
-      this.db.saveExchangeBaselineWallet(this.mode, baseline);
+    let info: {
+      totalWalletBalance: number;
+      availableBalance: number;
+      totalUnrealizedProfit: number;
+      totalMarginBalance: number;
+    } | null = null;
+    try {
+      info = await this.client.getAccountInfo();
+    } catch {
+      info = null;
     }
 
-    if (this.mode === 'TESTNET' && cap > 0 && info.totalWalletBalance > cap * 1.5) {
-      // Scale Testnet faucet balance cleanly while tracking 100% real exchange wallet delta (fees, funding, fills)
-      const realExchangeDelta = info.totalWalletBalance - baseline;
-      walletBalance = cap + realExchangeDelta;
-      unrealizedPnl = info.totalUnrealizedProfit;
-      totalEquity = walletBalance + unrealizedPnl;
-      availableBalance = Math.max(
-        0,
-        Math.min(info.availableBalance, walletBalance - isolatedMarginUsed),
-      );
-      initialCapitalUsdt = cap;
+    let walletBalance: number;
+    let availableBalance: number;
+    let unrealizedPnl = liveOpenUnrealized;
+    let totalEquity: number;
+    let initialCapitalUsdt: number;
+
+    if (info) {
+      let baseline = this.db.getExchangeBaselineWallet(this.mode);
+      if (baseline === null) {
+        baseline = info.totalWalletBalance - stats.netPnl;
+        this.db.saveExchangeBaselineWallet(this.mode, baseline);
+      }
+
+      unrealizedPnl =
+        openPositions.length > 0 ? liveOpenUnrealized : info.totalUnrealizedProfit;
+
+      if (this.mode === 'TESTNET' && cap > 0 && info.totalWalletBalance > cap * 1.5) {
+        // Scale Testnet faucet balance cleanly while tracking 100% real exchange wallet delta + WebSocket unrealized PnL
+        const realExchangeDelta = info.totalWalletBalance - baseline;
+        walletBalance = cap + realExchangeDelta;
+        totalEquity = walletBalance + unrealizedPnl;
+        availableBalance = Math.max(
+          0,
+          Math.min(info.availableBalance, walletBalance - isolatedMarginUsed),
+        );
+        initialCapitalUsdt = cap;
+      } else {
+        walletBalance = info.totalWalletBalance;
+        totalEquity = walletBalance + unrealizedPnl;
+        availableBalance = info.availableBalance;
+        initialCapitalUsdt = cap > 0 ? Math.min(baseline, cap) : baseline;
+      }
     } else {
-      initialCapitalUsdt = cap > 0 ? Math.min(baseline, cap) : baseline;
+      // Rate-limit / offline resilient fallback from DB ledger + live WebSocket mark prices
+      initialCapitalUsdt = cap > 0 ? cap : 500;
+      walletBalance = initialCapitalUsdt + stats.netPnl;
+      totalEquity = walletBalance + unrealizedPnl;
+      availableBalance = Math.max(0, walletBalance - isolatedMarginUsed);
     }
 
     const today = utcDayKey();

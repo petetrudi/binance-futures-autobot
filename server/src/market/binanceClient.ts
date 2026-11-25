@@ -101,8 +101,12 @@ export class BinanceFuturesClient {
   private lastTimeSyncAt = 0;
 
   private futuresKlinesBannedUntil = 0;
+  private fapiSignedBannedUntil = 0;
   private exchangeFiltersCache: CacheEntry<Map<string, SymbolFilter>> | null = null;
   private klinesCache = new Map<string, CacheEntry<Candle[]>>();
+  private accountInfoCache: CacheEntry<BinanceAccountInfo> | null = null;
+  private lastKnownAccountInfo: BinanceAccountInfo | null = null;
+  private positionRisksCache: CacheEntry<BinanceExchangePosition[]> | null = null;
 
   constructor(config: BinanceClientConfig) {
     this.mode = config.mode;
@@ -128,6 +132,33 @@ export class BinanceFuturesClient {
 
   isKlinesFallbackActive(): boolean {
     return Date.now() < this.futuresKlinesBannedUntil;
+  }
+
+  isSignedRateLimited(): boolean {
+    return Date.now() < this.fapiSignedBannedUntil;
+  }
+
+  getSignedRetryAtMs(): number {
+    return this.fapiSignedBannedUntil;
+  }
+
+  invalidateAccountCaches(): void {
+    this.accountInfoCache = null;
+    this.positionRisksCache = null;
+  }
+
+  private parseBanUntil(status: number, text: string): number {
+    const match = /banned until (\d+)/i.exec(text);
+    const now = Date.now();
+    if (match?.[1]) {
+      const serverBanEpoch = Number(match[1]);
+      const serverNow = now + this.timeOffsetMs;
+      const waitMs = serverBanEpoch - serverNow;
+      if (Number.isFinite(waitMs) && waitMs > 0) {
+        return now + Math.min(waitMs + 5_000, 4 * 3_600_000);
+      }
+    }
+    return now + (status === 418 ? 3 * 60_000 : 60_000);
   }
 
   private async fetchJson<T>(
@@ -156,7 +187,8 @@ export class BinanceFuturesClient {
   }
 
   async syncServerTime(): Promise<void> {
-    if (Date.now() - this.lastTimeSyncAt < 60_000) return;
+    if (Date.now() < this.fapiSignedBannedUntil) return;
+    if (Date.now() - this.lastTimeSyncAt < 300_000) return;
     const base = this.getFapiBaseUrl();
     const res = await this.fetchJson<{ serverTime: number }>(`${base}/fapi/v1/time`, {
       timeoutMs: 5000,
@@ -164,6 +196,11 @@ export class BinanceFuturesClient {
     if (res.ok && res.data?.serverTime) {
       this.timeOffsetMs = res.data.serverTime - Date.now();
       this.lastTimeSyncAt = Date.now();
+    } else if (res.status === 418 || res.status === 429) {
+      this.fapiSignedBannedUntil = Math.max(
+        this.fapiSignedBannedUntil,
+        this.parseBanUntil(res.status, res.text),
+      );
     }
   }
 
@@ -189,6 +226,12 @@ export class BinanceFuturesClient {
     if (!this.apiKey || !this.apiSecret) {
       throw new Error('Binance API key and secret are required for signed Futures requests');
     }
+    if (Date.now() < this.fapiSignedBannedUntil) {
+      const waitSec = Math.ceil((this.fapiSignedBannedUntil - Date.now()) / 1000);
+      throw new Error(
+        `Binance REST rate-limit cooldown active (${waitSec}s remaining) — using live WebSocket stream to prevent ban escalation`,
+      );
+    }
     await this.syncServerTime();
     const qs = this.signParams(params);
     const url = `${this.getFapiBaseUrl()}${path}?${qs}`;
@@ -202,6 +245,11 @@ export class BinanceFuturesClient {
     });
 
     if (!res.ok || res.data === null) {
+      if (res.status === 418 || res.status === 429) {
+        const until = this.parseBanUntil(res.status, res.text);
+        this.fapiSignedBannedUntil = Math.max(this.fapiSignedBannedUntil, until);
+        this.futuresKlinesBannedUntil = Math.max(this.futuresKlinesBannedUntil, until);
+      }
       throw new Error(`Binance API ${method} ${path} failed (${res.status}): ${res.text}`);
     }
     return res.data;
@@ -429,16 +477,53 @@ export class BinanceFuturesClient {
 
     let candles: Candle[] = [];
 
-    // Try Futures klines if not currently in 418/429 cooldown
-    if (Date.now() >= this.futuresKlinesBannedUntil) {
+    // When in TESTNET mode, query public mainnet Futures klines first to preserve Testnet API weight budget
+    const primaryKlinesBase =
+      this.mode === 'TESTNET' && !this.customFapiUrl.trim()
+        ? LIVE_FAPI_URL
+        : this.getFapiBaseUrl();
+
+    if (
+      primaryKlinesBase === LIVE_FAPI_URL ||
+      Date.now() >= this.futuresKlinesBannedUntil
+    ) {
+      const fapiUrl = `${primaryKlinesBase}/fapi/v1/klines?symbol=${encodeURIComponent(
+        symbol,
+      )}&interval=${interval}&limit=${limit}`;
+      const fapiRes = await this.fetchJson<unknown[][]>(fapiUrl, { timeoutMs: 6000 });
+      if (fapiRes.ok && Array.isArray(fapiRes.data)) {
+        candles = parseKlineArray(fapiRes.data, 1);
+      } else if (
+        primaryKlinesBase !== LIVE_FAPI_URL &&
+        (fapiRes.status === 418 || fapiRes.status === 429 || fapiRes.status === 0)
+      ) {
+        this.futuresKlinesBannedUntil =
+          fapiRes.status === 0
+            ? Date.now() + 5 * 60_000
+            : Math.max(
+                this.futuresKlinesBannedUntil,
+                this.parseBanUntil(fapiRes.status, fapiRes.text),
+              );
+      }
+    }
+
+    // Fallback to configured FAPI host if primary mainnet klines failed
+    if (
+      candles.length === 0 &&
+      primaryKlinesBase === LIVE_FAPI_URL &&
+      Date.now() >= this.futuresKlinesBannedUntil
+    ) {
       const fapiUrl = `${this.getFapiBaseUrl()}/fapi/v1/klines?symbol=${encodeURIComponent(
         symbol,
       )}&interval=${interval}&limit=${limit}`;
       const fapiRes = await this.fetchJson<unknown[][]>(fapiUrl, { timeoutMs: 6000 });
       if (fapiRes.ok && Array.isArray(fapiRes.data)) {
         candles = parseKlineArray(fapiRes.data, 1);
-      } else if (fapiRes.status === 418 || fapiRes.status === 429 || fapiRes.status === 0) {
-        this.futuresKlinesBannedUntil = Date.now() + 5 * 60_000;
+      } else if (fapiRes.status === 418 || fapiRes.status === 429) {
+        this.futuresKlinesBannedUntil = Math.max(
+          this.futuresKlinesBannedUntil,
+          this.parseBanUntil(fapiRes.status, fapiRes.text),
+        );
       }
     }
 
@@ -511,6 +596,7 @@ export class BinanceFuturesClient {
     if (avgPrice <= 0 && cumQuote > 0 && executedQty > 0) {
       avgPrice = cumQuote / executedQty;
     }
+    this.invalidateAccountCaches();
     return {
       orderId: String(data.orderId ?? ''),
       clientOrderId: String(data.clientOrderId ?? params.clientOrderId),
@@ -555,30 +641,56 @@ export class BinanceFuturesClient {
   async cancelAllOpenOrders(symbol: string): Promise<void> {
     try {
       await this.signedRequest('DELETE', '/fapi/v1/allOpenOrders', { symbol });
+      this.invalidateAccountCaches();
     } catch {
       // Ignore if none open
     }
   }
 
   async getAccountInfo(): Promise<BinanceAccountInfo> {
-    const data = await this.signedRequest<Record<string, unknown>>(
-      'GET',
-      '/fapi/v2/account',
-    );
-    return {
-      totalWalletBalance: Number(data.totalWalletBalance ?? 0),
-      availableBalance: Number(data.availableBalance ?? 0),
-      totalUnrealizedProfit: Number(data.totalUnrealizedProfit ?? 0),
-      totalMarginBalance: Number(data.totalMarginBalance ?? 0),
-    };
+    if (this.accountInfoCache && Date.now() < this.accountInfoCache.expiresAt) {
+      return this.accountInfoCache.data;
+    }
+
+    if (Date.now() < this.fapiSignedBannedUntil && this.lastKnownAccountInfo) {
+      return this.lastKnownAccountInfo;
+    }
+
+    try {
+      const data = await this.signedRequest<Record<string, unknown>>(
+        'GET',
+        '/fapi/v2/account',
+      );
+      const info: BinanceAccountInfo = {
+        totalWalletBalance: Number(data.totalWalletBalance ?? 0),
+        availableBalance: Number(data.availableBalance ?? 0),
+        totalUnrealizedProfit: Number(data.totalUnrealizedProfit ?? 0),
+        totalMarginBalance: Number(data.totalMarginBalance ?? 0),
+      };
+      this.lastKnownAccountInfo = info;
+      this.accountInfoCache = {
+        data: info,
+        expiresAt: Date.now() + 45_000,
+      };
+      return info;
+    } catch (err) {
+      if (this.lastKnownAccountInfo) {
+        return this.lastKnownAccountInfo;
+      }
+      throw err;
+    }
   }
 
   async getPositionRisks(): Promise<BinanceExchangePosition[]> {
+    if (this.positionRisksCache && Date.now() < this.positionRisksCache.expiresAt) {
+      return this.positionRisksCache.data;
+    }
+
     const rows = await this.signedRequest<Array<Record<string, unknown>>>(
       'GET',
       '/fapi/v2/positionRisk',
     );
-    return rows
+    const list = rows
       .map((r) => ({
         symbol: String(r.symbol ?? ''),
         positionAmt: Number(r.positionAmt ?? 0),
@@ -590,6 +702,11 @@ export class BinanceFuturesClient {
         isolatedMargin: Number(r.isolatedMargin ?? 0),
       }))
       .filter((p) => Math.abs(p.positionAmt) > 0);
+    this.positionRisksCache = {
+      data: list,
+      expiresAt: Date.now() + 45_000,
+    };
+    return list;
   }
 
   async getUserTrades(

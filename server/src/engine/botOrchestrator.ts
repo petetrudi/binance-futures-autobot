@@ -497,7 +497,8 @@ export class BotOrchestrator extends EventEmitter {
       if (
         this.mode !== 'PAPER' &&
         this.broker.reconcileStartup &&
-        now - this.lastExchangeSyncAt >= 30_000
+        !this.binanceClient.isSignedRateLimited() &&
+        now - this.lastExchangeSyncAt >= 45_000
       ) {
         this.lastExchangeSyncAt = now;
         const beforeCount = this.db.getOpenPositions(this.mode).length;
@@ -955,21 +956,27 @@ export class BotOrchestrator extends EventEmitter {
     try {
       account = await this.broker.getAccountSummary(positions, this.riskConfig);
     } catch {
+      const cap = this.riskConfig.maxAccountCapitalUsdt ?? 500;
+      const stats = this.db.getTradeStats(this.mode);
+      const marginUsed = positions.reduce((s, p) => s + p.isolatedMargin, 0);
+      const unrealized = positions.reduce((s, p) => s + p.unrealizedPnl, 0);
+      const wallet = cap + stats.netPnl;
       account = {
         mode: this.mode,
-        walletBalance: 0,
-        availableBalance: 0,
-        isolatedMarginUsed: 0,
-        unrealizedPnl: 0,
-        totalEquity: 0,
-        startingDayEquity: 0,
-        dailyPnl: 0,
-        dailyPnlPct: 0,
+        walletBalance: wallet,
+        availableBalance: Math.max(0, wallet - marginUsed),
+        isolatedMarginUsed: marginUsed,
+        unrealizedPnl: unrealized,
+        totalEquity: wallet + unrealized,
+        initialCapitalUsdt: cap,
+        startingDayEquity: cap,
+        dailyPnl: stats.netPnl + unrealized,
+        dailyPnlPct: cap > 0 ? ((stats.netPnl + unrealized) / cap) * 100 : 0,
         dailyLossLimitPct: this.riskConfig.maxDailyLossPct,
         circuitBreakerTripped: false,
-        totalTrades: 0,
-        winRatePct: 0,
-        profitFactor: 0,
+        totalTrades: stats.totalTrades,
+        winRatePct: stats.winRatePct,
+        profitFactor: stats.profitFactor,
       };
     }
 

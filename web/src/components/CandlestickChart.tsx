@@ -78,7 +78,7 @@ export function CandlestickChart({
       },
       rightPriceScale: {
         borderColor: '#1E293B',
-        scaleMargins: { top: 0.08, bottom: 0.25 },
+        scaleMargins: { top: 0.06, bottom: 0.28 },
       },
       timeScale: {
         borderColor: '#1E293B',
@@ -103,7 +103,7 @@ export function CandlestickChart({
       priceLineVisible: false,
     });
     volumeSeries.priceScale().applyOptions({
-      scaleMargins: { top: 0.84, bottom: 0 },
+      scaleMargins: { top: 0.85, bottom: 0 },
     });
 
     const ema9Series = chart.addSeries(LineSeries, {
