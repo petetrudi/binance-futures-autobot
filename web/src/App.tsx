@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   FlaskConical,
   LayoutDashboard,
+  LineChart,
   Newspaper,
   Radar,
   Sliders,
@@ -9,18 +10,19 @@ import {
 } from 'lucide-react';
 import type { CandleChartResponse, Timeframe } from '@bot/shared';
 import { BacktestTab } from './components/BacktestTab.js';
-import { ChartModal } from './components/ChartModal.js';
 import { NewsTab } from './components/NewsTab.js';
 import { OverviewTab } from './components/OverviewTab.js';
+import { RealtimeChartTab } from './components/RealtimeChartTab.js';
 import { ScannerTab } from './components/ScannerTab.js';
 import { SettingsAndHistoryTab } from './components/SettingsAndHistoryTab.js';
 import { TopBar } from './components/TopBar.js';
 import { useDashboard } from './hooks/useDashboard.js';
 import { api } from './lib/api.js';
 
-type TabId = 'overview' | 'scanner' | 'news' | 'backtest' | 'settings';
+type BaseTabId = 'overview' | 'scanner' | 'news' | 'backtest' | 'settings';
+type TabId = BaseTabId | 'chart';
 
-const TABS: Array<{ id: TabId; label: string; icon: typeof LayoutDashboard }> = [
+const TABS: Array<{ id: BaseTabId; label: string; icon: typeof LayoutDashboard }> = [
   { id: 'overview', label: 'Command Center', icon: LayoutDashboard },
   { id: 'scanner', label: 'Auto-Scanner', icon: Radar },
   { id: 'news', label: 'News & AI', icon: Newspaper },
@@ -47,22 +49,41 @@ export function App() {
   } = useDashboard();
 
   const [tab, setTab] = useState<TabId>('overview');
-  const [selectedSymbol, setSelectedSymbol] = useState('BTCUSDT');
+  const [previousTab, setPreviousTab] = useState<BaseTabId>('overview');
+  const [activeChartSymbol, setActiveChartSymbol] = useState<string | null>(null);
   const [interval, setIntervalState] = useState<Timeframe>('15m');
   const [chartData, setChartData] = useState<CandleChartResponse | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
-  const [isChartModalOpen, setIsChartModalOpen] = useState(false);
+
+  const openRealtimeChart = (sym: string) => {
+    const cleanSym = sym.toUpperCase();
+    if (tab !== 'chart') {
+      setPreviousTab(tab);
+    }
+    setActiveChartSymbol(cleanSym);
+    setTab('chart');
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  };
+
+  const closeRealtimeChart = () => {
+    setActiveChartSymbol(null);
+    if (tab === 'chart') {
+      setTab(previousTab);
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    }
+  };
 
   useEffect(() => {
+    if (!activeChartSymbol) return;
     let cancelled = false;
     setChartLoading(true);
     void api
-      .getCandles(selectedSymbol, interval, 200)
+      .getCandles(activeChartSymbol, interval, 200)
       .then((res) => {
         if (!cancelled) setChartData(res);
       })
       .catch(() => {
-        // Handled cleanly via empty fallback
+        // Handled cleanly via loading/empty fallback
       })
       .finally(() => {
         if (!cancelled) setChartLoading(false);
@@ -70,29 +91,29 @@ export function App() {
 
     const timer = window.setInterval(() => {
       void api
-        .getCandles(selectedSymbol, interval, 200)
+        .getCandles(activeChartSymbol, interval, 200)
         .then((res) => {
           if (!cancelled) setChartData(res);
         })
         .catch(() => undefined);
-    }, 30_000);
+    }, 15_000);
 
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [selectedSymbol, interval]);
+  }, [activeChartSymbol, interval]);
 
   if (loading || !snapshot) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#090D16] text-sm text-slate-300">
+      <div className="flex min-h-screen items-center justify-center bg-[#06090F] text-sm text-slate-300">
         {error ? `Connection error: ${error}` : 'Booting APEX-QUANT Futures Terminal...'}
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#090D16] text-slate-100">
+    <div className="min-h-screen bg-[#06090F] text-slate-100">
       <TopBar
         status={snapshot.status}
         wsConnected={wsConnected}
@@ -102,8 +123,8 @@ export function App() {
         onKillSwitch={killSwitch}
       />
 
-      <nav className="border-b border-slate-800/80 bg-[#0D1320]">
-        <div className="mx-auto flex max-w-[1600px] gap-1 overflow-x-auto px-4 py-2">
+      <nav className="border-b border-slate-800/80 bg-[#0A0F1A]">
+        <div className="mx-auto flex max-w-[1600px] items-center gap-1.5 overflow-x-auto px-4 py-2">
           {TABS.map((t) => {
             const Icon = t.icon;
             const active = tab === t.id;
@@ -123,6 +144,33 @@ export function App() {
               </button>
             );
           })}
+
+          {activeChartSymbol && (
+            <div
+              className={`ml-1 inline-flex shrink-0 items-center rounded-lg border text-xs font-semibold transition ${
+                tab === 'chart'
+                  ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
+                  : 'border-slate-700/80 bg-[#0E1420] text-slate-300 hover:border-slate-600'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => setTab('chart')}
+                className="inline-flex items-center gap-1.5 py-1.5 pl-3 pr-1.5"
+              >
+                <LineChart className="h-3.5 w-3.5 text-emerald-400" />
+                Grafik: {activeChartSymbol}
+              </button>
+              <button
+                type="button"
+                onClick={closeRealtimeChart}
+                className="mr-1 rounded p-0.5 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+                title="Tutup Tab Grafik"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          )}
         </div>
       </nav>
 
@@ -143,19 +191,25 @@ export function App() {
         {tab === 'overview' && (
           <OverviewTab
             snapshot={snapshot}
-            selectedSymbol={selectedSymbol}
-            interval={interval}
-            chartData={chartData}
-            chartLoading={chartLoading}
             busyAction={busyAction}
-            onSelectSymbol={setSelectedSymbol}
-            onIntervalChange={setIntervalState}
             onScanNow={scanNow}
             onClosePosition={closePosition}
-            onOpenChart={(sym) => {
-              setSelectedSymbol(sym);
-              setIsChartModalOpen(true);
-            }}
+            onOpenChart={openRealtimeChart}
+          />
+        )}
+
+        {tab === 'chart' && activeChartSymbol && (
+          <RealtimeChartTab
+            symbol={activeChartSymbol}
+            snapshot={snapshot}
+            interval={interval}
+            chartData={chartData}
+            loading={chartLoading}
+            busyAction={busyAction}
+            onSelectSymbol={openRealtimeChart}
+            onIntervalChange={setIntervalState}
+            onClosePosition={closePosition}
+            onCloseTab={closeRealtimeChart}
           />
         )}
 
@@ -164,10 +218,7 @@ export function App() {
             snapshot={snapshot}
             busyAction={busyAction}
             onScanNow={scanNow}
-            onInspectChart={(sym) => {
-              setSelectedSymbol(sym);
-              setIsChartModalOpen(true);
-            }}
+            onInspectChart={openRealtimeChart}
           />
         )}
 
@@ -179,7 +230,13 @@ export function App() {
           />
         )}
 
-        {tab === 'backtest' && <BacktestTab defaultSymbol={selectedSymbol} />}
+        {tab === 'backtest' && (
+          <BacktestTab
+            defaultSymbol={
+              activeChartSymbol ?? snapshot.scanner[0]?.symbol ?? 'BTCUSDT'
+            }
+          />
+        )}
 
         {tab === 'settings' && (
           <SettingsAndHistoryTab
@@ -187,23 +244,10 @@ export function App() {
             busyAction={busyAction}
             onSaveSettings={saveSettings}
             onResetPaper={resetPaper}
+            onOpenChart={openRealtimeChart}
           />
         )}
       </main>
-
-      {/* Realtime Candlestick Chart Modal - opens when any coin is clicked */}
-      <ChartModal
-        isOpen={isChartModalOpen}
-        onClose={() => setIsChartModalOpen(false)}
-        symbol={selectedSymbol}
-        interval={interval}
-        chartData={chartData}
-        loading={chartLoading}
-        activePosition={snapshot.positions.find((p) => p.symbol === selectedSymbol) ?? null}
-        selectedSignal={snapshot.signals.find((s) => s.symbol === selectedSymbol) ?? null}
-        onIntervalChange={setIntervalState}
-        onClosePosition={closePosition}
-      />
     </div>
   );
 }

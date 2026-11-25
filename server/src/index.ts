@@ -110,6 +110,7 @@ wss.on('connection', (ws) => {
   })();
 });
 
+orchestrator.on('snapshot', (data) => broadcast({ type: 'snapshot', data }));
 orchestrator.on('tick', (data) => broadcast({ type: 'tick', data }));
 orchestrator.on('scanner', (data) => broadcast({ type: 'scanner', data }));
 orchestrator.on('news', (data) => broadcast({ type: 'news', data }));

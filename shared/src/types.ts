@@ -420,6 +420,7 @@ export interface DashboardSnapshot {
   status: BotStatus;
   account: AccountSummary;
   positions: Position[];
+  closedPositions: Position[];
   scanner: ScannerCandidate[];
   signals: TradeSignal[];
   news: NewsItem[];

@@ -51,3 +51,22 @@ export function fmtClock(tsMs: number): string {
     second: '2-digit',
   });
 }
+
+export function fmtLocalDateTime(tsMs: number): string {
+  const d = new Date(tsMs);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
+    d.getHours(),
+  )}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+export function fmtDuration(startMs: number, endMs: number): string {
+  const sec = Math.max(0, Math.floor((endMs - startMs) / 1000));
+  if (sec < 60) return `${sec}s`;
+  const mins = Math.floor(sec / 60);
+  const remSec = sec % 60;
+  if (mins < 60) return `${mins}m ${remSec}s`;
+  const hrs = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return `${hrs}h ${remMins}m`;
+}

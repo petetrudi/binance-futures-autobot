@@ -444,6 +444,15 @@ export class BotDatabase {
     return rows.map((r) => this.mapPositionRow(r));
   }
 
+  getClosedPositions(mode: TradingMode, limit = 100): Position[] {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM positions WHERE mode = ? AND status = 'CLOSED' ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT ?",
+      )
+      .all(mode, limit) as Record<string, unknown>[];
+    return rows.map((r) => this.mapPositionRow(r));
+  }
+
   getPositionById(id: string): Position | null {
     const row = this.db
       .prepare('SELECT * FROM positions WHERE id = ?')
@@ -525,8 +534,13 @@ export class BotDatabase {
         "SELECT realized_pnl FROM trades WHERE mode = ? AND action != 'OPEN'",
       )
       .all(mode) as Array<{ realized_pnl: number }>;
+    const netRow = this.db
+      .prepare('SELECT COALESCE(SUM(realized_pnl), 0) AS total FROM trades WHERE mode = ?')
+      .get(mode) as { total: number } | undefined;
+    const totalNetPnl = Number(netRow?.total ?? 0);
+
     if (rows.length === 0) {
-      return { totalTrades: 0, winRatePct: 0, profitFactor: 0, netPnl: 0 };
+      return { totalTrades: 0, winRatePct: 0, profitFactor: 0, netPnl: totalNetPnl };
     }
     let wins = 0;
     let grossWin = 0;
@@ -547,7 +561,7 @@ export class BotDatabase {
       totalTrades: rows.length,
       winRatePct,
       profitFactor,
-      netPnl: grossWin - grossLoss,
+      netPnl: totalNetPnl,
     };
   }
 

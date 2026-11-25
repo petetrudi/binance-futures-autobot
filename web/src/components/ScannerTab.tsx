@@ -19,7 +19,7 @@ export function ScannerTab({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-[#111827] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800/90 bg-[#0E1420] p-4">
         <div>
           <div className="flex items-center gap-2">
             <Radar className="h-4 w-4 text-cyan-400" />
@@ -47,7 +47,7 @@ export function ScannerTab({
         </button>
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-slate-800 bg-[#111827] p-4">
+      <div className="overflow-x-auto rounded-xl border border-slate-800/90 bg-[#0E1420] p-4">
         <table className="w-full text-left text-xs">
           <thead>
             <tr className="border-b border-slate-800 text-[11px] text-slate-400">

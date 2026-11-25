@@ -39,7 +39,7 @@ export function TopBar({
         : 'bg-amber-500/15 text-amber-300 border-amber-500/40';
 
   return (
-    <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#090D16]/95 backdrop-blur">
+    <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#070B13]/95 backdrop-blur">
       <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-cyan-500/30 bg-cyan-500/10 text-cyan-400">

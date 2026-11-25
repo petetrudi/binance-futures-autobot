@@ -12,6 +12,7 @@ interface SettingsAndHistoryTabProps {
   busyAction: string | null;
   onSaveSettings: (payload: SettingsUpdatePayload) => void;
   onResetPaper: (balance: number) => void;
+  onOpenChart?: (symbol: string) => void;
 }
 
 export function SettingsAndHistoryTab({
@@ -19,6 +20,7 @@ export function SettingsAndHistoryTab({
   busyAction,
   onSaveSettings,
   onResetPaper,
+  onOpenChart,
 }: SettingsAndHistoryTabProps) {
   const { settings, trades, logs } = snapshot;
 
@@ -110,7 +112,7 @@ export function SettingsAndHistoryTab({
       {/* Settings Editor */}
       <form
         onSubmit={handleSave}
-        className="rounded-xl border border-slate-800 bg-[#111827] p-4"
+        className="rounded-xl border border-slate-800/90 bg-[#0E1420] p-4"
       >
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -130,25 +132,25 @@ export function SettingsAndHistoryTab({
         </div>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <div className="space-y-3 rounded-lg border border-slate-800/80 bg-[#0B111E] p-3.5">
+          <div className="space-y-3 rounded-lg border border-slate-800/80 bg-[#080C14] p-3.5">
             <div className="text-xs font-bold text-slate-200">
               Risk & Auto-Scanner Parameters
             </div>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              <label className="text-[11px] text-slate-400">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+              <label className="flex flex-col text-[11px] text-slate-400">
                 Trading Mode
                 <select
                   value={mode}
                   onChange={(e) => setMode(e.target.value as TradingMode)}
-                  className="mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs font-semibold text-slate-100"
+                  className="mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs font-semibold text-slate-100"
                 >
-                  <option value="PAPER">PAPER (Simulated)</option>
-                  <option value="TESTNET">TESTNET (Binance Demo)</option>
-                  <option value="LIVE">LIVE (Real Funds)</option>
+                  <option value="PAPER">PAPER (Sim)</option>
+                  <option value="TESTNET">TESTNET (Demo)</option>
+                  <option value="LIVE">LIVE (Real)</option>
                 </select>
               </label>
 
-              <label className="text-[11px] text-slate-400">
+              <label className="flex flex-col text-[11px] text-slate-400">
                 Default Leverage (x)
                 <input
                   type="number"
@@ -156,11 +158,11 @@ export function SettingsAndHistoryTab({
                   max={25}
                   value={leverage}
                   onChange={(e) => setLeverage(Number(e.target.value))}
-                  className="font-mono-num mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
+                  className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
                 />
               </label>
 
-              <label className="text-[11px] text-slate-400">
+              <label className="flex flex-col text-[11px] text-slate-400">
                 Risk Per Trade (%)
                 <input
                   type="number"
@@ -169,11 +171,11 @@ export function SettingsAndHistoryTab({
                   step={0.1}
                   value={riskPerTradePct}
                   onChange={(e) => setRiskPerTradePct(Number(e.target.value))}
-                  className="font-mono-num mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
+                  className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
                 />
               </label>
 
-              <label className="text-[11px] text-slate-400">
+              <label className="flex flex-col text-[11px] text-slate-400">
                 Max Margin / Trade (%)
                 <input
                   type="number"
@@ -182,11 +184,11 @@ export function SettingsAndHistoryTab({
                   step={1}
                   value={maxMarginPerTradePct}
                   onChange={(e) => setMaxMarginPerTradePct(Number(e.target.value))}
-                  className="font-mono-num mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
+                  className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
                 />
               </label>
 
-              <label className="text-[11px] text-slate-400">
+              <label className="flex flex-col text-[11px] text-slate-400">
                 Lead Trader Capital ($)
                 <input
                   type="number"
@@ -196,11 +198,11 @@ export function SettingsAndHistoryTab({
                   value={maxAccountCapitalUsdt}
                   onChange={(e) => setMaxAccountCapitalUsdt(Number(e.target.value))}
                   placeholder="500"
-                  className="font-mono-num mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
+                  className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
                 />
               </label>
 
-              <label className="text-[11px] text-slate-400">
+              <label className="flex flex-col text-[11px] text-slate-400">
                 Max Open Positions
                 <input
                   type="number"
@@ -208,11 +210,11 @@ export function SettingsAndHistoryTab({
                   max={10}
                   value={maxConcurrentPositions}
                   onChange={(e) => setMaxConcurrentPositions(Number(e.target.value))}
-                  className="font-mono-num mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
+                  className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
                 />
               </label>
 
-              <label className="text-[11px] text-slate-400">
+              <label className="flex flex-col text-[11px] text-slate-400">
                 Daily Loss Guard (%)
                 <input
                   type="number"
@@ -221,11 +223,11 @@ export function SettingsAndHistoryTab({
                   step={0.5}
                   value={maxDailyLossPct}
                   onChange={(e) => setMaxDailyLossPct(Number(e.target.value))}
-                  className="font-mono-num mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
+                  className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
                 />
               </label>
 
-              <label className="text-[11px] text-slate-400">
+              <label className="flex flex-col text-[11px] text-slate-400">
                 Min Confidence (%)
                 <input
                   type="number"
@@ -233,11 +235,11 @@ export function SettingsAndHistoryTab({
                   max={95}
                   value={minConfidence}
                   onChange={(e) => setMinConfidence(Number(e.target.value))}
-                  className="font-mono-num mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
+                  className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
                 />
               </label>
 
-              <label className="text-[11px] text-slate-400">
+              <label className="flex flex-col text-[11px] text-slate-400">
                 Min 24h Vol ($M)
                 <input
                   type="number"
@@ -245,11 +247,11 @@ export function SettingsAndHistoryTab({
                   max={1000}
                   value={minVolumeM}
                   onChange={(e) => setMinVolumeM(Number(e.target.value))}
-                  className="font-mono-num mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
+                  className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
                 />
               </label>
 
-              <label className="text-[11px] text-slate-400">
+              <label className="flex flex-col text-[11px] text-slate-400">
                 Scan Cadence (sec)
                 <input
                   type="number"
@@ -257,12 +259,12 @@ export function SettingsAndHistoryTab({
                   max={300}
                   value={scanIntervalSec}
                   onChange={(e) => setScanIntervalSec(Number(e.target.value))}
-                  className="font-mono-num mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
+                  className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
                 />
               </label>
 
-              <div className="flex items-end">
-                <label className="flex items-center gap-2 text-xs text-slate-300">
+              <div className="col-span-2 flex items-end">
+                <label className="flex h-[30px] w-full cursor-pointer items-center gap-2 rounded border border-slate-700/80 bg-[#0E1420] px-2.5 text-xs text-slate-200">
                   <input
                     type="checkbox"
                     checked={enableAutoTrading}
@@ -286,7 +288,7 @@ export function SettingsAndHistoryTab({
             )}
           </div>
 
-          <div className="space-y-3 rounded-lg border border-slate-800/80 bg-[#0B111E] p-3.5">
+          <div className="space-y-3 rounded-lg border border-slate-800/80 bg-[#080C14] p-3.5">
             <div className="flex items-center gap-2 text-xs font-bold text-slate-200">
               <KeyRound className="h-3.5 w-3.5 text-amber-400" />
               API Credentials (write-only; never echoed back)
@@ -302,7 +304,7 @@ export function SettingsAndHistoryTab({
                   placeholder="Enter to update..."
                   value={binanceApiKey}
                   onChange={(e) => setBinanceApiKey(e.target.value)}
-                  className="mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2.5 py-1.5 text-xs text-slate-100"
+                  className="mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2.5 text-xs text-slate-100"
                 />
               </label>
 
@@ -316,7 +318,7 @@ export function SettingsAndHistoryTab({
                   placeholder="Enter to update..."
                   value={binanceApiSecret}
                   onChange={(e) => setBinanceApiSecret(e.target.value)}
-                  className="mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2.5 py-1.5 text-xs text-slate-100"
+                  className="mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2.5 text-xs text-slate-100"
                 />
               </label>
 
@@ -327,10 +329,10 @@ export function SettingsAndHistoryTab({
                 </span>
                 <input
                   type="password"
-                  placeholder="Optional for Gemini 3.8 Flash..."
+                  placeholder="Optional for Gemini AI..."
                   value={geminiApiKey}
                   onChange={(e) => setGeminiApiKey(e.target.value)}
-                  className="mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2.5 py-1.5 text-xs text-slate-100"
+                  className="mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2.5 text-xs text-slate-100"
                 />
               </label>
 
@@ -342,7 +344,7 @@ export function SettingsAndHistoryTab({
                     placeholder={settings.credentials.hasTelegramConfig ? 'Active' : 'Optional'}
                     value={telegramBotToken}
                     onChange={(e) => setTelegramBotToken(e.target.value)}
-                    className="mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
+                    className="mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
                   />
                 </label>
                 <label className="text-[11px] text-slate-400">
@@ -352,7 +354,7 @@ export function SettingsAndHistoryTab({
                     placeholder="Optional"
                     value={telegramChatId}
                     onChange={(e) => setTelegramChatId(e.target.value)}
-                    className="mt-1 w-full rounded border border-slate-700 bg-[#090D16] px-2 py-1.5 text-xs text-slate-100"
+                    className="mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
                   />
                 </label>
               </div>
@@ -369,7 +371,7 @@ export function SettingsAndHistoryTab({
                     min={100}
                     value={paperResetAmount}
                     onChange={(e) => setPaperResetAmount(Number(e.target.value))}
-                    className="font-mono-num w-28 rounded border border-slate-700 bg-[#090D16] px-2 py-1 text-xs text-slate-100"
+                    className="font-mono-num h-[30px] w-28 rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
                   />
                   <button
                     type="button"
@@ -389,7 +391,7 @@ export function SettingsAndHistoryTab({
 
       {/* Trade Ledger + System Logs */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-        <div className="rounded-xl border border-slate-800 bg-[#111827] p-4 lg:col-span-7">
+        <div className="rounded-xl border border-slate-800/90 bg-[#0E1420] p-4 lg:col-span-7">
           <div className="mb-3 flex items-center gap-2">
             <History className="h-4 w-4 text-emerald-400" />
             <h3 className="text-sm font-bold text-slate-100">
@@ -400,37 +402,56 @@ export function SettingsAndHistoryTab({
             <table className="w-full text-left text-xs">
               <thead>
                 <tr className="border-b border-slate-800 text-[11px] text-slate-400">
-                  <th className="py-2 pr-2">Time</th>
-                  <th className="py-2 pr-2">Pair</th>
-                  <th className="py-2 pr-2">Action</th>
-                  <th className="py-2 pr-2">Price / Qty</th>
-                  <th className="py-2 pr-2">PnL</th>
+                  <th className="whitespace-nowrap py-2 pr-2">Time</th>
+                  <th className="whitespace-nowrap py-2 pr-2">Pair</th>
+                  <th className="whitespace-nowrap py-2 pr-2">Action</th>
+                  <th className="whitespace-nowrap py-2 pr-2">Price / Qty</th>
+                  <th className="whitespace-nowrap py-2 pr-2">PnL</th>
                   <th className="py-2">Reason</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/70">
                 {trades.map((t) => (
                   <tr key={t.id}>
-                    <td className="font-mono-num py-2 pr-2 text-slate-400">
+                    <td className="font-mono-num whitespace-nowrap py-2 pr-2 text-[11px] text-slate-400">
                       {fmtClock(t.createdAt)}
                     </td>
-                    <td className="py-2 pr-2 font-semibold text-slate-100">
-                      {t.symbol} ({t.side})
+                    <td className="whitespace-nowrap py-2 pr-2 font-semibold text-slate-100">
+                      {onOpenChart ? (
+                        <button
+                          type="button"
+                          onClick={() => onOpenChart(t.symbol)}
+                          className="text-left hover:text-cyan-300"
+                        >
+                          {t.symbol}{' '}
+                          <span
+                            className={`text-[10px] ${
+                              t.side === 'LONG' ? 'text-emerald-400' : 'text-rose-400'
+                            }`}
+                          >
+                            {t.side}
+                          </span>
+                        </button>
+                      ) : (
+                        <span>
+                          {t.symbol} ({t.side})
+                        </span>
+                      )}
                     </td>
-                    <td className="py-2 pr-2 text-[11px] font-semibold text-cyan-300">
-                      {t.action}
+                    <td className="whitespace-nowrap py-2 pr-2 text-[11px] font-semibold text-cyan-300">
+                      {t.action.replace('CLOSE_', '')}
                     </td>
-                    <td className="font-mono-num py-2 pr-2 text-slate-300">
+                    <td className="font-mono-num whitespace-nowrap py-2 pr-2 text-[11px] text-slate-300">
                       ${fmtPrice(t.price)} × {t.quantity}
                     </td>
                     <td
-                      className={`font-mono-num py-2 pr-2 font-semibold ${
+                      className={`font-mono-num whitespace-nowrap py-2 pr-2 font-semibold ${
                         t.realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'
                       }`}
                     >
                       {fmtUsdt(t.realizedPnl, true)}
                     </td>
-                    <td className="max-w-xs truncate py-2 text-slate-400">
+                    <td className="whitespace-normal break-words py-2 text-[11px] leading-snug text-slate-400">
                       {t.reason}
                     </td>
                   </tr>
@@ -447,7 +468,7 @@ export function SettingsAndHistoryTab({
           </div>
         </div>
 
-        <div className="rounded-xl border border-slate-800 bg-[#111827] p-4 lg:col-span-5">
+        <div className="rounded-xl border border-slate-800/90 bg-[#0E1420] p-4 lg:col-span-5">
           <div className="mb-3 flex items-center gap-2">
             <Terminal className="h-4 w-4 text-cyan-400" />
             <h3 className="text-sm font-bold text-slate-100">System Audit Logs</h3>
@@ -456,7 +477,7 @@ export function SettingsAndHistoryTab({
             {logs.map((log) => (
               <div
                 key={log.id}
-                className="rounded border border-slate-800/70 bg-[#0B111E] px-2.5 py-1.5"
+                className="rounded border border-slate-800/70 bg-[#080C14] px-2.5 py-1.5"
               >
                 <div className="flex items-center justify-between text-[10px]">
                   <span

@@ -411,6 +411,7 @@ export class BotOrchestrator extends EventEmitter {
                 `SL: ${opened.stopLoss} | TP1: ${opened.takeProfit1} | TP2: ${opened.takeProfit2}`,
                 `Confidence: ${signal.confidence}%`,
               ]);
+              this.emitSnapshotUpdate();
             } else if (riskEval.rejectionReason) {
               signal = {
                 ...signal,
@@ -483,6 +484,7 @@ export class BotOrchestrator extends EventEmitter {
       `Realized PnL: ${closed.realizedPnl >= 0 ? '+' : ''}${closed.realizedPnl.toFixed(2)} USDT`,
       `Reason: ${reason}`,
     ]);
+    this.emitSnapshotUpdate();
     return closed;
   }
 
@@ -558,6 +560,7 @@ export class BotOrchestrator extends EventEmitter {
             `Price: ${markPrice}`,
             `Moved SL to Break-Even: ${updated.stopLoss}`,
           ]);
+          this.emitSnapshotUpdate();
         } else if (decision.type === 'UPDATE_TRAILING_SL') {
           await this.broker.updateStopLoss(
             { ...pos, markPrice, unrealizedPnl: computeUnrealizedPnl(pos, markPrice) },
@@ -673,11 +676,11 @@ export class BotOrchestrator extends EventEmitter {
     return this.closePositionInternal(pos, 'CLOSE_MANUAL', px, 'Manual close from dashboard');
   }
 
-  resetPaperAccount(balance = 10_000): AccountSummary {
+  resetPaperAccount(balance = 500): AccountSummary {
     if (this.mode !== 'PAPER') {
       throw new Error('Paper reset is only allowed in PAPER trading mode');
     }
-    const safeBalance = Math.max(100, Math.min(10_000_000, Number(balance) || 10_000));
+    const safeBalance = Math.max(100, Math.min(10_000_000, Number(balance) || 500));
     this.db.resetPaperAccount(safeBalance);
     this.log('INFO', 'Paper', `Paper account reset to ${safeBalance.toFixed(2)} USDT`);
     return {
@@ -918,8 +921,15 @@ export class BotOrchestrator extends EventEmitter {
     return this.getSettingsView();
   }
 
+  private emitSnapshotUpdate(): void {
+    void this.getDashboardSnapshot()
+      .then((snapshot) => this.emit('snapshot', snapshot))
+      .catch(() => undefined);
+  }
+
   async getDashboardSnapshot(): Promise<DashboardSnapshot> {
     const positions = this.db.getOpenPositions(this.mode);
+    const closedPositions = this.db.getClosedPositions(this.mode, 100);
     let account: AccountSummary;
     try {
       account = await this.broker.getAccountSummary(positions, this.riskConfig);
@@ -946,6 +956,7 @@ export class BotOrchestrator extends EventEmitter {
       status: this.getBotStatus(),
       account,
       positions,
+      closedPositions,
       scanner: this.scannerCandidates,
       signals: this.getOrderedSignals(),
       news: this.db.getRecentNews(60),

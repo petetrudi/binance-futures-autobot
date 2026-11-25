@@ -1,29 +1,21 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Activity,
+  AreaSeries,
+  ColorType,
+  createChart,
+  type UTCTimestamp,
+} from 'lightweight-charts';
+import {
   AlertTriangle,
-  ArrowDownRight,
-  ArrowUpRight,
-  ChevronDown,
   Info,
-  Maximize2,
-  Newspaper,
-  Radar,
+  LineChart,
   RefreshCw,
-  Sliders,
-  TrendingDown,
-  TrendingUp,
-  X,
 } from 'lucide-react';
-import type {
-  CandleChartResponse,
-  DashboardSnapshot,
-  Position,
-  Timeframe,
-  TradeRecord,
-} from '@bot/shared';
+import type { DashboardSnapshot, Position } from '@bot/shared';
 import {
   fmtCompactUsd,
+  fmtDuration,
+  fmtLocalDateTime,
   fmtPct,
   fmtPrice,
   fmtTimeAgo,
@@ -32,448 +24,512 @@ import {
 
 interface OverviewTabProps {
   snapshot: DashboardSnapshot;
-  selectedSymbol: string;
-  interval: Timeframe;
-  chartData: CandleChartResponse | null;
-  chartLoading: boolean;
   busyAction: string | null;
-  onSelectSymbol: (symbol: string) => void;
-  onIntervalChange: (tf: Timeframe) => void;
   onScanNow: () => void;
   onClosePosition: (id: string) => void;
   onOpenChart: (symbol: string) => void;
 }
 
-type TimeRange = '7D' | '30D' | '90D' | '365D';
+type TimeRange = '24H' | '7D' | '30D' | '365D';
 type MetricView = 'ROI' | 'PnL';
 type BottomSubTab = 'positions' | 'history' | 'scanner' | 'news';
 
-const ASSET_PALETTE = [
-  { name: 'ETH', color: '#3B82F6', pct: 35.04 },
-  { name: 'BTC', color: '#06B6D4', pct: 12.98 },
-  { name: 'ZEC', color: '#10B981', pct: 6.54 },
-  { name: 'LAB', color: '#64748B', pct: 4.85 },
-  { name: 'AKE', color: '#EC4899', pct: 2.99 },
-  { name: 'RAVE', color: '#A855F7', pct: 2.98 },
-  { name: 'UB', color: '#6366F1', pct: 2.68 },
-  { name: 'PIPPIN', color: '#EAB308', pct: 2.1 },
-  { name: 'SIREN', color: '#F97316', pct: 2.04 },
-  { name: 'LSK', color: '#D946EF', pct: 1.51 },
-  { name: 'OTHER', color: '#94A3B8', pct: 26.29 },
+const TIME_RANGE_MS: Record<TimeRange, number> = {
+  '24H': 24 * 3_600_000,
+  '7D': 7 * 24 * 3_600_000,
+  '30D': 30 * 24 * 3_600_000,
+  '365D': 365 * 24 * 3_600_000,
+};
+
+const DONUT_COLORS = [
+  '#3B82F6',
+  '#06B6D4',
+  '#10B981',
+  '#F59E0B',
+  '#EC4899',
+  '#8B5CF6',
+  '#F97316',
+  '#64748B',
 ];
+
+function computeAvgClosePrice(
+  pos: Position,
+  trades: DashboardSnapshot['trades'],
+): number {
+  const exitTrades = trades.filter(
+    (t) => t.positionId === pos.id && t.action !== 'OPEN' && t.quantity > 0,
+  );
+  if (exitTrades.length === 0) return pos.markPrice;
+  const totalQty = exitTrades.reduce((s, t) => s + t.quantity, 0);
+  if (totalQty <= 0) return pos.markPrice;
+  const weighted = exitTrades.reduce((s, t) => s + t.price * t.quantity, 0);
+  return weighted / totalQty;
+}
 
 export function OverviewTab({
   snapshot,
-  selectedSymbol,
-  interval,
-  chartData,
-  chartLoading,
   busyAction,
-  onSelectSymbol,
-  onIntervalChange,
   onScanNow,
   onClosePosition,
   onOpenChart,
 }: OverviewTabProps) {
-  const { account, positions, scanner, signals, news, trades } = snapshot;
+  const { account, positions, closedPositions = [], scanner, signals, news, trades } =
+    snapshot;
 
   const [timeRange, setTimeRange] = useState<TimeRange>('365D');
   const [metricView, setMetricView] = useState<MetricView>('ROI');
-  const [bottomTab, setBottomTab] = useState<BottomSubTab>('history');
+  const [bottomTab, setBottomTab] = useState<BottomSubTab>(() => {
+    if (positions.length > 0) return 'positions';
+    if ((snapshot.closedPositions?.length ?? 0) > 0) return 'history';
+    return 'scanner';
+  });
   const [sortOrder, setSortOrder] = useState<'closingTime' | 'openingTime'>('closingTime');
-  const [hoveredPoint, setHoveredPoint] = useState<{
-    date: string;
-    roi: string;
-    pnl: string;
-    x: number;
-    y: number;
-  } | null>(null);
 
-  const initialCapital = snapshot.settings.risk.maxAccountCapitalUsdt ?? 500;
-  const netPnl = account.totalEquity - initialCapital;
-  const roiPct = initialCapital > 0 ? (netPnl / initialCapital) * 100 : 0;
+  const chartContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Closed trades filter & sort
-  const closedTrades = useMemo(() => {
-    const list = trades.filter((t) => t.action !== 'OPEN');
-    return list.sort((a, b) =>
-      sortOrder === 'closingTime' ? b.createdAt - a.createdAt : a.createdAt - b.createdAt,
+  const initialCapital =
+    snapshot.settings.risk.maxAccountCapitalUsdt &&
+    snapshot.settings.risk.maxAccountCapitalUsdt > 0
+      ? snapshot.settings.risk.maxAccountCapitalUsdt
+      : account.totalEquity > 0
+        ? account.totalEquity - (account.dailyPnl || 0)
+        : 500;
+
+  // Filter closed positions by selected timeRange
+  const filteredClosed = useMemo(() => {
+    const cutoff = Date.now() - TIME_RANGE_MS[timeRange];
+    const list = closedPositions.filter(
+      (p) => (p.closedAt ?? p.openedAt) >= cutoff,
     );
-  }, [trades, sortOrder]);
+    return [...list].sort((a, b) =>
+      sortOrder === 'closingTime'
+        ? (b.closedAt ?? b.openedAt) - (a.closedAt ?? a.openedAt)
+        : b.openedAt - a.openedAt,
+    );
+  }, [closedPositions, timeRange, sortOrder]);
 
-  // Win stats calculation
-  const winCount = useMemo(
-    () => closedTrades.filter((t) => t.realizedPnl > 0).length,
-    [closedTrades],
-  );
-  const totalPositionsCount = Math.max(closedTrades.length, account.totalTrades);
-  const winRateDisplay =
-    totalPositionsCount > 0
-      ? ((winCount / totalPositionsCount) * 100).toFixed(2)
-      : account.winRatePct > 0
-        ? account.winRatePct.toFixed(2)
-        : '96.36';
+  // Compute genuine performance metrics from closed positions + live equity
+  const metrics = useMemo(() => {
+    const realizedSum = filteredClosed.reduce((s, p) => s + p.realizedPnl, 0);
+    const totalCount = filteredClosed.length;
+    const wins = filteredClosed.filter((p) => p.realizedPnl > 0);
+    const losses = filteredClosed.filter((p) => p.realizedPnl < 0);
+    const winCount = wins.length;
 
-  // Cumulative equity curve points
-  const equityPoints = useMemo(() => {
-    // 16 historical date anchors across 365 days
-    const dates = [
-      '11-25', '12-10', '01-05', '01-28', '02-18', '03-12', '04-02', '04-26',
-      '05-19', '06-11', '07-04', '07-28', '08-20', '09-14', '10-08', '11-10', '11-24',
-    ];
+    const winRatePct =
+      totalCount > 0 ? (winCount / totalCount) * 100 : account.winRatePct;
 
-    const baseGrowth = [
-      0, 15, 45, 95, 160, 240, 350, 490, 620, 780, 940, 1080, 1210, 1320, 1390, 1410,
-    ];
+    const grossWin = wins.reduce((s, p) => s + p.realizedPnl, 0);
+    const grossLoss = losses.reduce((s, p) => s + Math.abs(p.realizedPnl), 0);
+    const profitFactor =
+      grossLoss > 0
+        ? grossWin / grossLoss
+        : grossWin > 0
+          ? 99.0
+          : account.profitFactor;
 
-    // Scale to current ROI or reference performance
-    const maxVal = Math.max(1416.66, roiPct > 0 ? roiPct : 1416.66);
-    const scaleFactor = maxVal / 1416.66;
+    const netPnl =
+      timeRange === '365D'
+        ? account.totalEquity - initialCapital
+        : realizedSum + account.unrealizedPnl;
 
-    return dates.map((date, idx) => {
-      const base = idx === dates.length - 1 && roiPct !== 0 ? roiPct : (baseGrowth[idx] ?? 0) * scaleFactor;
-      const pnlVal = (base / 100) * initialCapital;
-      return {
-        date,
-        roiVal: base,
-        pnlVal: Math.max(0, pnlVal),
-      };
-    });
-  }, [initialCapital, roiPct]);
+    const roiPct = initialCapital > 0 ? (netPnl / initialCapital) * 100 : 0;
 
-  // Asset Preference Slices (Donut Chart)
-  const assetSlices = useMemo(() => {
-    if (closedTrades.length > 0) {
-      const symMap = new Map<string, number>();
-      let totalNotional = 0;
-      for (const t of closedTrades) {
-        const key = t.symbol.replace('USDT', '');
-        const val = (symMap.get(key) ?? 0) + (t.notional > 0 ? t.notional : 100);
-        symMap.set(key, val);
-        totalNotional += val;
+    // Chronological cumulative equity for Sharpe & Max Drawdown
+    const chrono = [...filteredClosed].sort(
+      (a, b) => (a.closedAt ?? a.openedAt) - (b.closedAt ?? b.openedAt),
+    );
+    let eq = initialCapital;
+    let peak = eq;
+    let maxDdPct = 0;
+    const returns: number[] = [];
+
+    for (const p of chrono) {
+      const prevEq = eq;
+      eq += p.realizedPnl;
+      if (prevEq > 0) returns.push(p.realizedPnl / prevEq);
+      if (eq > peak) peak = eq;
+      const ddPct = peak > 0 ? ((peak - eq) / peak) * 100 : 0;
+      if (ddPct > maxDdPct) maxDdPct = ddPct;
+    }
+
+    // Account for current live unrealized drawdown too
+    if (timeRange === '365D') {
+      const liveEq = account.totalEquity;
+      if (liveEq > peak) peak = liveEq;
+      const liveDd = peak > 0 ? ((peak - liveEq) / peak) * 100 : 0;
+      if (liveDd > maxDdPct) maxDdPct = liveDd;
+    }
+
+    let sharpe = 0;
+    if (returns.length >= 2) {
+      const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
+      const variance =
+        returns.reduce((s, r) => s + (r - mean) ** 2, 0) / (returns.length - 1);
+      const std = Math.sqrt(variance);
+      if (std > 0) {
+        sharpe = (mean / std) * Math.sqrt(returns.length);
       }
-      const sorted = Array.from(symMap.entries()).sort((a, b) => b[1] - a[1]);
-      const palette = ['#3B82F6', '#06B6D4', '#10B981', '#EC4899', '#A855F7', '#EAB308', '#F97316', '#64748B'];
-      return sorted.slice(0, 8).map(([name, notional], i) => ({
-        name,
-        color: palette[i % palette.length]!,
-        pct: Number(((notional / Math.max(totalNotional, 1)) * 100).toFixed(2)),
-      }));
     }
-    return ASSET_PALETTE;
-  }, [closedTrades]);
 
-  // SVG dimensions for Equity Curve
-  const svgWidth = 600;
-  const svgHeight = 200;
-  const paddingX = 45;
-  const paddingY = 25;
+    return {
+      roiPct,
+      netPnl,
+      realizedSum,
+      totalCount: totalCount || account.totalTrades,
+      winCount,
+      winRatePct,
+      profitFactor,
+      maxDdPct,
+      sharpe,
+    };
+  }, [filteredClosed, account, initialCapital, timeRange]);
 
-  const maxChartVal = useMemo(() => {
-    const vals = equityPoints.map((p) => (metricView === 'ROI' ? p.roiVal : p.pnlVal));
-    return Math.max(...vals, 100);
-  }, [equityPoints, metricView]);
+  // Build real cumulative equity curve for lightweight-charts AreaSeries
+  const equityCurveData = useMemo(() => {
+    const chrono = [...filteredClosed].sort(
+      (a, b) => (a.closedAt ?? a.openedAt) - (b.closedAt ?? a.openedAt),
+    );
+    const nowSec = Math.floor(Date.now() / 1000);
+    const points: Array<{ time: number; roi: number; pnl: number }> = [];
 
-  const curvePath = useMemo(() => {
-    const usableW = svgWidth - paddingX * 2;
-    const usableH = svgHeight - paddingY * 2;
-    const n = equityPoints.length;
+    const firstTsMs =
+      chrono[0]?.openedAt ?? Date.now() - Math.min(TIME_RANGE_MS[timeRange], 3_600_000);
+    let startSec = Math.floor(firstTsMs / 1000) - 60;
+    if (startSec >= nowSec) startSec = nowSec - 60;
 
-    const coords = equityPoints.map((pt, i) => {
-      const x = paddingX + (i / (n - 1)) * usableW;
-      const val = metricView === 'ROI' ? pt.roiVal : pt.pnlVal;
-      const y = svgHeight - paddingY - (val / maxChartVal) * usableH;
-      return { x, y, pt };
+    let cumulativePnl = 0;
+    points.push({ time: startSec, roi: 0, pnl: 0 });
+
+    let lastTime = startSec;
+    for (const p of chrono) {
+      cumulativePnl += p.realizedPnl;
+      let tSec = Math.floor((p.closedAt ?? p.openedAt) / 1000);
+      if (tSec <= lastTime) tSec = lastTime + 1;
+      lastTime = tSec;
+      const roi = initialCapital > 0 ? (cumulativePnl / initialCapital) * 100 : 0;
+      points.push({ time: tSec, roi, pnl: cumulativePnl });
+    }
+
+    // Current live point
+    const finalTime = nowSec <= lastTime ? lastTime + 1 : nowSec;
+    points.push({
+      time: finalTime,
+      roi: metrics.roiPct,
+      pnl: metrics.netPnl,
     });
 
-    let path = `M ${coords[0]?.x} ${coords[0]?.y}`;
-    for (let i = 1; i < coords.length; i++) {
-      const prev = coords[i - 1]!;
-      const cur = coords[i]!;
-      const cx = (prev.x + cur.x) / 2;
-      path += ` C ${cx} ${prev.y}, ${cx} ${cur.y}, ${cur.x} ${cur.y}`;
+    return points;
+  }, [filteredClosed, initialCapital, metrics.roiPct, metrics.netPnl, timeRange]);
+
+  useEffect(() => {
+    const el = chartContainerRef.current;
+    if (!el || equityCurveData.length === 0) return;
+
+    const isPositive =
+      (metricView === 'ROI' ? metrics.roiPct : metrics.netPnl) >= 0;
+    const lineColor = isPositive ? '#10B981' : '#F43F5E';
+    const topColor = isPositive
+      ? 'rgba(16, 185, 129, 0.30)'
+      : 'rgba(244, 63, 94, 0.30)';
+
+    const chart = createChart(el, {
+      width: el.clientWidth,
+      height: 200,
+      layout: {
+        background: { type: ColorType.Solid, color: '#0E1420' },
+        textColor: '#94A3B8',
+        fontFamily: 'JetBrains Mono, monospace',
+        fontSize: 11,
+      },
+      grid: {
+        vertLines: { color: '#161F30' },
+        horzLines: { color: '#161F30' },
+      },
+      rightPriceScale: {
+        borderColor: '#1E293B',
+      },
+      timeScale: {
+        borderColor: '#1E293B',
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      crosshair: {
+        vertLine: { color: '#334155', labelBackgroundColor: '#1E293B' },
+        horzLine: { color: '#334155', labelBackgroundColor: '#1E293B' },
+      },
+    });
+
+    const area = chart.addSeries(AreaSeries, {
+      lineColor,
+      topColor,
+      bottomColor: 'rgba(14, 20, 32, 0.0)',
+      lineWidth: 2,
+      priceFormat: {
+        type: 'custom',
+        formatter: (price: number) =>
+          metricView === 'ROI'
+            ? `${price >= 0 ? '+' : ''}${price.toFixed(2)}%`
+            : `${price >= 0 ? '+' : ''}$${price.toFixed(2)}`,
+      },
+    });
+
+    area.setData(
+      equityCurveData.map((pt) => ({
+        time: pt.time as UTCTimestamp,
+        value: metricView === 'ROI' ? pt.roi : pt.pnl,
+      })),
+    );
+    chart.timeScale().fitContent();
+
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth > 0) chart.applyOptions({ width: el.clientWidth });
+    });
+    ro.observe(el);
+
+    return () => {
+      ro.disconnect();
+      chart.remove();
+    };
+  }, [equityCurveData, metricView, metrics.roiPct, metrics.netPnl]);
+
+  // Real Asset Preferences (from closed + active positions, or honest scanner watchlist preview)
+  const assetAllocation = useMemo(() => {
+    const combined = [...positions, ...filteredClosed];
+    if (combined.length > 0) {
+      const volMap = new Map<string, number>();
+      let total = 0;
+      for (const p of combined) {
+        const base = p.symbol.replace('USDT', '');
+        const notional = Math.max(p.quantity * p.entryPrice, 1);
+        volMap.set(base, (volMap.get(base) ?? 0) + notional);
+        total += notional;
+      }
+      const sorted = Array.from(volMap.entries()).sort((a, b) => b[1] - a[1]);
+      const top = sorted.slice(0, 7);
+      const otherVal = sorted.slice(7).reduce((s, [, v]) => s + v, 0);
+      const items = top.map(([name, val], i) => ({
+        name,
+        symbol: `${name}USDT`,
+        color: DONUT_COLORS[i % DONUT_COLORS.length]!,
+        pct: Number(((val / Math.max(total, 1)) * 100).toFixed(2)),
+      }));
+      if (otherVal > 0) {
+        items.push({
+          name: 'OTHER',
+          symbol: '',
+          color: '#64748B',
+          pct: Number(((otherVal / Math.max(total, 1)) * 100).toFixed(2)),
+        });
+      }
+      return { isWatchlistPreview: false, items };
     }
 
-    const area = `${path} L ${coords.at(-1)?.x} ${svgHeight - paddingY} L ${coords[0]?.x} ${svgHeight - paddingY} Z`;
+    // Watchlist preview using genuine live Auto-Scanner 24h Spot Volume
+    const topScanner = scanner.slice(0, 7);
+    const totalVol = topScanner.reduce((s, c) => s + Math.max(c.quoteVolume24h, 1), 0);
+    if (topScanner.length === 0 || totalVol <= 0) {
+      return {
+        isWatchlistPreview: true,
+        items: [
+          { name: 'BTC', symbol: 'BTCUSDT', color: DONUT_COLORS[0]!, pct: 50 },
+          { name: 'ETH', symbol: 'ETHUSDT', color: DONUT_COLORS[1]!, pct: 50 },
+        ],
+      };
+    }
+    return {
+      isWatchlistPreview: true,
+      items: topScanner.map((c, i) => ({
+        name: c.symbol.replace('USDT', ''),
+        symbol: c.symbol,
+        color: DONUT_COLORS[i % DONUT_COLORS.length]!,
+        pct: Number(((c.quoteVolume24h / totalVol) * 100).toFixed(2)),
+      })),
+    };
+  }, [positions, filteredClosed, scanner]);
 
-    return { path, area, coords };
-  }, [equityPoints, metricView, maxChartVal]);
+  const dailyLossUsedPct = Math.min(
+    100,
+    Math.max(
+      0,
+      account.dailyPnlPct < 0
+        ? (Math.abs(account.dailyPnlPct) /
+            Math.max(account.dailyLossLimitPct, 0.1)) *
+            100
+        : 0,
+    ),
+  );
+
+  const riskDollarPerTrade =
+    initialCapital * (snapshot.settings.risk.riskPerTradePct / 100);
 
   return (
     <div className="space-y-4">
       {/* ============================================================ */}
-      {/* ROW 1: PERFORMANCE STATS & ROI/PNL CURVE                      */}
+      {/* ROW 1: PERFORMANCE STATS & REAL EQUITY CURVE                 */}
       {/* ============================================================ */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         {/* Left: Performance Card */}
-        <div className="flex flex-col justify-between rounded-2xl border border-slate-800 bg-[#090D16] p-5 shadow-sm lg:col-span-4">
+        <div className="flex flex-col justify-between rounded-xl border border-slate-800/90 bg-[#0E1420] p-4 shadow-sm lg:col-span-4">
           <div>
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-base font-bold text-slate-100">Performance</h2>
-              <div className="relative">
-                <button
-                  type="button"
-                  className="flex items-center gap-1.5 rounded-lg border border-slate-700/80 bg-[#0E1526] px-2.5 py-1 text-xs font-semibold text-slate-200 transition hover:bg-slate-800"
-                >
-                  {timeRange === '365D' ? '365 Days' : timeRange}
-                  <ChevronDown className="h-3 w-3 text-slate-400" />
-                </button>
-              </div>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-100">Performance</h2>
+              <select
+                value={timeRange}
+                onChange={(e) => setTimeRange(e.target.value as TimeRange)}
+                aria-label="Performance Time Range"
+                className="rounded-lg border border-slate-700/80 bg-[#080C14] px-2.5 py-1 text-xs font-semibold text-slate-200 outline-none hover:border-slate-600"
+              >
+                <option value="24H">24 Hours</option>
+                <option value="7D">7 Days</option>
+                <option value="30D">30 Days</option>
+                <option value="365D">365 Days / All</option>
+              </select>
             </div>
 
             {/* Hero ROI & PnL */}
-            <div className="mb-5 grid grid-cols-2 gap-3 border-b border-slate-800/80 pb-4">
+            <div className="mb-3 grid grid-cols-2 gap-3 border-b border-slate-800/80 pb-3">
               <div>
                 <div className="text-[11px] font-semibold text-slate-400">ROI</div>
-                <div className="font-mono-num mt-1 text-2xl font-black tracking-tight text-[#10B981]">
-                  +{roiPct > 0 ? roiPct.toFixed(2) : '1,416.66'}%
+                <div
+                  className={`font-mono-num mt-1 text-2xl font-black tracking-tight ${
+                    metrics.roiPct >= 0 ? 'text-[#10B981]' : 'text-rose-400'
+                  }`}
+                >
+                  {fmtPct(metrics.roiPct)}
                 </div>
               </div>
               <div>
-                <div className="text-[11px] font-semibold text-slate-400">PnL</div>
-                <div className="font-mono-num mt-1 text-2xl font-black tracking-tight text-[#10B981]">
-                  +{netPnl > 0 ? netPnl.toFixed(2) : '7,083.30'}
+                <div className="text-[11px] font-semibold text-slate-400">Net PnL</div>
+                <div
+                  className={`font-mono-num mt-1 text-2xl font-black tracking-tight ${
+                    metrics.netPnl >= 0 ? 'text-[#10B981]' : 'text-rose-400'
+                  }`}
+                >
+                  {fmtUsdt(metrics.netPnl, true)}
                 </div>
               </div>
             </div>
 
-            {/* Performance Metric Rows */}
+            {/* Performance Rows (100% Real Data) */}
             <div className="space-y-2.5 text-xs">
               <div className="flex items-center justify-between">
-                <span className="border-b border-dotted border-slate-600 text-slate-400">
-                  Copier PnL
+                <span className="border-b border-dotted border-slate-700 text-slate-400">
+                  Realized PnL
                 </span>
-                <span className="font-mono-num font-bold text-[#10B981]">
-                  +174,766.97 USDT
+                <span
+                  className={`font-mono-num font-bold ${
+                    metrics.realizedSum >= 0 ? 'text-[#10B981]' : 'text-rose-400'
+                  }`}
+                >
+                  {fmtUsdt(metrics.realizedSum, true)} USDT
                 </span>
               </div>
 
               <div className="flex items-center justify-between">
-                <span className="border-b border-dotted border-slate-600 text-slate-400">
-                  Sharpe Ratio
+                <span className="border-b border-dotted border-slate-700 text-slate-400">
+                  Unrealized PnL
                 </span>
-                <span className="font-mono-num font-bold text-slate-200">6.03</span>
+                <span
+                  className={`font-mono-num font-bold ${
+                    account.unrealizedPnl >= 0 ? 'text-cyan-300' : 'text-rose-400'
+                  }`}
+                >
+                  {fmtUsdt(account.unrealizedPnl, true)} USDT
+                </span>
               </div>
 
               <div className="flex items-center justify-between">
-                <span className="border-b border-dotted border-slate-600 text-slate-400">
-                  MDD
+                <span className="border-b border-dotted border-slate-700 text-slate-400">
+                  Sharpe / Profit Factor
                 </span>
                 <span className="font-mono-num font-bold text-slate-200">
-                  {account.dailyLossLimitPct ? `${account.dailyLossLimitPct}.00%` : '14.39%'}
+                  {metrics.sharpe.toFixed(2)} / PF {metrics.profitFactor.toFixed(2)}
                 </span>
               </div>
 
               <div className="flex items-center justify-between">
-                <span className="border-b border-dotted border-slate-600 text-slate-400">
+                <span className="border-b border-dotted border-slate-700 text-slate-400">
+                  Max Drawdown (MDD)
+                </span>
+                <span className="font-mono-num font-bold text-slate-200">
+                  {metrics.maxDdPct.toFixed(2)}%
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="border-b border-dotted border-slate-700 text-slate-400">
                   Win Rate
                 </span>
                 <span className="font-mono-num font-bold text-[#10B981]">
-                  {winRateDisplay}%
+                  {metrics.winRatePct.toFixed(2)}%
                 </span>
               </div>
 
               <div className="flex items-center justify-between">
-                <span className="border-b border-dotted border-slate-600 text-slate-400">
-                  Win Positions
+                <span className="border-b border-dotted border-slate-700 text-slate-400">
+                  Win / Total Positions
                 </span>
                 <span className="font-mono-num font-bold text-slate-200">
-                  {winCount > 0 ? winCount : 583}
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <span className="border-b border-dotted border-slate-600 text-slate-400">
-                  Total Positions
-                </span>
-                <span className="font-mono-num font-bold text-slate-200">
-                  {totalPositionsCount > 0 ? totalPositionsCount : 605}
+                  {metrics.winCount} / {metrics.totalCount}
                 </span>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Right: ROI / PnL Cumulative Equity Curve */}
-        <div className="flex flex-col justify-between rounded-2xl border border-slate-800 bg-[#090D16] p-5 shadow-sm lg:col-span-8">
-          <div className="mb-2 flex items-center justify-between">
-            <div className="flex items-center gap-1 rounded-lg border border-slate-800 bg-[#0E1526] p-1">
-              <button
-                type="button"
-                onClick={() => setMetricView('ROI')}
-                className={`rounded px-3 py-1 text-xs font-bold transition ${
-                  metricView === 'ROI'
-                    ? 'bg-slate-700/80 text-slate-100 shadow-sm'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                ROI
-              </button>
-              <button
-                type="button"
-                onClick={() => setMetricView('PnL')}
-                className={`rounded px-3 py-1 text-xs font-bold transition ${
-                  metricView === 'PnL'
-                    ? 'bg-slate-700/80 text-slate-100 shadow-sm'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                PnL
-              </button>
-            </div>
-
+        {/* Right: ROI / PnL Live Chart (lightweight-charts AreaSeries) */}
+        <div className="flex flex-col justify-between rounded-xl border border-slate-800/90 bg-[#0E1420] p-4 shadow-sm lg:col-span-8">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                className="flex items-center gap-1.5 rounded-lg border border-slate-700/80 bg-[#0E1526] px-2.5 py-1 text-xs font-semibold text-slate-200 transition hover:bg-slate-800"
-              >
-                {timeRange === '365D' ? '365 Days' : timeRange}
-                <ChevronDown className="h-3 w-3 text-slate-400" />
-              </button>
-            </div>
-          </div>
-
-          {/* SVG Canvas */}
-          <div className="relative h-64 w-full">
-            <svg
-              viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-              className="h-full w-full overflow-visible"
-              preserveAspectRatio="none"
-            >
-              <defs>
-                <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#10B981" stopOpacity="0.32" />
-                  <stop offset="70%" stopColor="#10B981" stopOpacity="0.08" />
-                  <stop offset="100%" stopColor="#10B981" stopOpacity="0.00" />
-                </linearGradient>
-              </defs>
-
-              {/* Grid Lines */}
-              <line
-                x1={paddingX}
-                y1={paddingY}
-                x2={svgWidth - paddingX}
-                y2={paddingY}
-                stroke="#1E293B"
-                strokeDasharray="3 3"
-              />
-              <line
-                x1={paddingX}
-                y1={(svgHeight - paddingY * 2) * 0.33 + paddingY}
-                x2={svgWidth - paddingX}
-                y2={(svgHeight - paddingY * 2) * 0.33 + paddingY}
-                stroke="#1E293B"
-                strokeDasharray="3 3"
-              />
-              <line
-                x1={paddingX}
-                y1={(svgHeight - paddingY * 2) * 0.66 + paddingY}
-                x2={svgWidth - paddingX}
-                y2={(svgHeight - paddingY * 2) * 0.66 + paddingY}
-                stroke="#1E293B"
-                strokeDasharray="3 3"
-              />
-              <line
-                x1={paddingX}
-                y1={svgHeight - paddingY}
-                x2={svgWidth - paddingX}
-                y2={svgHeight - paddingY}
-                stroke="#1E293B"
-              />
-
-              {/* Y-Axis Labels */}
-              <text x={paddingX - 8} y={paddingY + 4} textAnchor="end" className="fill-slate-500 text-[10px] font-mono">
-                {metricView === 'ROI' ? '1500%' : '7500'}
-              </text>
-              <text
-                x={paddingX - 8}
-                y={(svgHeight - paddingY * 2) * 0.33 + paddingY + 4}
-                textAnchor="end"
-                className="fill-slate-500 text-[10px] font-mono"
-              >
-                {metricView === 'ROI' ? '1000%' : '5000'}
-              </text>
-              <text
-                x={paddingX - 8}
-                y={(svgHeight - paddingY * 2) * 0.66 + paddingY + 4}
-                textAnchor="end"
-                className="fill-slate-500 text-[10px] font-mono"
-              >
-                {metricView === 'ROI' ? '500%' : '2500'}
-              </text>
-              <text x={paddingX - 8} y={svgHeight - paddingY + 4} textAnchor="end" className="fill-slate-500 text-[10px] font-mono">
-                0%
-              </text>
-
-              {/* Area & Line */}
-              <path d={curvePath.area} fill="url(#equityGrad)" />
-              <path
-                d={curvePath.path}
-                fill="none"
-                stroke="#10B981"
-                strokeWidth="2.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-
-              {/* Interactive Dots */}
-              {curvePath.coords.map(({ x, y, pt }) => (
-                <circle
-                  key={pt.date}
-                  cx={x}
-                  cy={y}
-                  r={hoveredPoint?.date === pt.date ? 4.5 : 2}
-                  className="cursor-pointer transition-all fill-emerald-400 stroke-slate-950"
-                  strokeWidth="1.5"
-                  onMouseEnter={() =>
-                    setHoveredPoint({
-                      date: pt.date,
-                      roi: `${pt.roiVal.toFixed(2)}%`,
-                      pnl: `$${pt.pnlVal.toFixed(2)}`,
-                      x,
-                      y,
-                    })
-                  }
-                  onMouseLeave={() => setHoveredPoint(null)}
-                />
-              ))}
-
-              {/* X-Axis Labels */}
-              {['11-25', '01-14', '03-05', '04-24', '06-13', '08-02', '09-21', '11-10'].map(
-                (label, i, arr) => {
-                  const usableW = svgWidth - paddingX * 2;
-                  const x = paddingX + (i / (arr.length - 1)) * usableW;
-                  return (
-                    <text
-                      key={label}
-                      x={x}
-                      y={svgHeight - 6}
-                      textAnchor="middle"
-                      className="fill-slate-500 text-[10px] font-mono"
-                    >
-                      {label}
-                    </text>
-                  );
-                },
-              )}
-            </svg>
-
-            {/* Hover Tooltip Overlay */}
-            {hoveredPoint && (
-              <div
-                className="pointer-events-none absolute -translate-x-1/2 -translate-y-full rounded-lg border border-slate-700 bg-slate-900/95 px-2.5 py-1.5 shadow-xl backdrop-blur"
-                style={{
-                  left: `${(hoveredPoint.x / svgWidth) * 100}%`,
-                  top: `${(hoveredPoint.y / svgHeight) * 100}%`,
-                }}
-              >
-                <div className="text-[10px] text-slate-400">{hoveredPoint.date}</div>
-                <div className="font-mono-num text-xs font-bold text-emerald-400">
-                  {metricView === 'ROI' ? hoveredPoint.roi : hoveredPoint.pnl}
-                </div>
+              <div className="flex items-center gap-1 rounded-lg border border-slate-800 bg-[#080C14] p-1">
+                <button
+                  type="button"
+                  onClick={() => setMetricView('ROI')}
+                  className={`rounded px-3 py-1 text-xs font-bold transition ${
+                    metricView === 'ROI'
+                      ? 'bg-slate-700/80 text-slate-100 shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  ROI (%)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMetricView('PnL')}
+                  className={`rounded px-3 py-1 text-xs font-bold transition ${
+                    metricView === 'PnL'
+                      ? 'bg-slate-700/80 text-slate-100 shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  PnL (USDT)
+                </button>
               </div>
-            )}
+              {closedPositions.length === 0 && (
+                <span className="hidden rounded border border-slate-700/80 bg-[#080C14] px-2 py-0.5 text-[11px] text-slate-400 sm:inline">
+                  Menunggu trade tertutup pertama · Tracking live baseline
+                </span>
+              )}
+            </div>
+
+            <select
+              value={timeRange}
+              onChange={(e) => setTimeRange(e.target.value as TimeRange)}
+              aria-label="Chart Time Range"
+              className="rounded-lg border border-slate-700/80 bg-[#080C14] px-2.5 py-1 text-xs font-semibold text-slate-200 outline-none hover:border-slate-600"
+            >
+              <option value="24H">24 Hours</option>
+              <option value="7D">7 Days</option>
+              <option value="30D">30 Days</option>
+              <option value="365D">365 Days / All</option>
+            </select>
           </div>
+
+          <div
+            ref={chartContainerRef}
+            className="h-[200px] w-full overflow-hidden rounded-lg border border-slate-800/70 bg-[#0E1420]"
+          />
         </div>
       </div>
 
@@ -481,86 +537,132 @@ export function OverviewTab({
       {/* ROW 2: LEAD TRADER OVERVIEW & ASSET PREFERENCES (DONUT)      */}
       {/* ============================================================ */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-        {/* Left: Lead Trader Overview */}
-        <div className="flex flex-col justify-between rounded-2xl border border-slate-800 bg-[#090D16] p-5 shadow-sm lg:col-span-4">
+        {/* Left: Lead Trader & Risk Overview */}
+        <div className="flex flex-col justify-between rounded-xl border border-slate-800/90 bg-[#0E1420] p-4 shadow-sm lg:col-span-4">
           <div>
-            <h2 className="mb-4 text-base font-bold text-slate-100">
-              Lead Trader Overview
-            </h2>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-100">
+                Lead Trader Overview
+              </h2>
+              {snapshot.settings.risk.maxAccountCapitalUsdt && (
+                <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-bold text-cyan-300">
+                  Cap ${snapshot.settings.risk.maxAccountCapitalUsdt}
+                </span>
+              )}
+            </div>
 
-            <div className="space-y-4 text-xs">
+            <div className="space-y-3 text-xs">
               <div className="flex items-center justify-between">
-                <span className="text-slate-400">AUM</span>
-                <span className="font-mono-num font-bold text-slate-100">
-                  {snapshot.settings.risk.maxAccountCapitalUsdt
-                    ? `${snapshot.settings.risk.maxAccountCapitalUsdt.toLocaleString()}.00 USDT`
-                    : '754,646.46 USDT'}
+                <span className="text-slate-400">Total Equity (AUM)</span>
+                <span className="font-mono-num text-sm font-bold text-slate-100">
+                  {fmtUsdt(account.totalEquity)} USDT
                 </span>
               </div>
 
               <div className="flex items-center justify-between">
-                <span className="text-slate-400">Profit Sharing</span>
-                <span className="font-mono-num font-bold text-slate-100">10.00%</span>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <span className="text-slate-400">Leading Margin Balance</span>
-                <span className="font-mono-num font-bold text-slate-100">
-                  {fmtUsdt(account.availableBalance)}
+                <span className="text-slate-400">Free Margin Balance</span>
+                <span className="font-mono-num font-bold text-slate-200">
+                  {fmtUsdt(account.availableBalance)} USDT
                 </span>
               </div>
 
               <div className="flex items-center justify-between">
-                <span className="text-slate-400">Minimum Copy Amount</span>
-                <span className="font-mono-num font-bold text-slate-100">
-                  100/100 USDT
+                <span className="text-slate-400">Isolated Margin Used</span>
+                <span className="font-mono-num font-bold text-slate-200">
+                  {fmtUsdt(account.isolatedMarginUsed)} ({positions.length}/
+                  {snapshot.settings.risk.maxConcurrentPositions} Pos)
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Risk / Max Margin</span>
+                <span className="font-mono-num font-bold text-emerald-400">
+                  {snapshot.settings.risk.riskPerTradePct}% (~${riskDollarPerTrade.toFixed(2)}) · Max{' '}
+                  {snapshot.settings.risk.maxMarginPerTradePct}%
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Leverage & Confidence</span>
+                <span className="font-mono-num font-bold text-slate-200">
+                  {snapshot.settings.risk.defaultLeverage}x Isolated · Min{' '}
+                  {snapshot.settings.strategy.minConfidence}%
                 </span>
               </div>
             </div>
           </div>
 
-          <div className="mt-4 rounded-xl border border-slate-800/80 bg-[#0B111E] p-3 text-xs text-slate-400">
-            <div className="flex items-center justify-between">
-              <span>Risk Guard Status:</span>
-              <span className="font-bold text-emerald-400">ISOLATED MARGIN 2x</span>
+          {/* Daily Loss Circuit Guard */}
+          <div className="mt-4 rounded-lg border border-slate-800/80 bg-[#080C14] p-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-slate-400">Daily PnL & Loss Guard</span>
+              <span
+                className={`font-mono-num font-bold ${
+                  account.dailyPnl >= 0 ? 'text-[#10B981]' : 'text-rose-400'
+                }`}
+              >
+                {fmtUsdt(account.dailyPnl, true)} ({fmtPct(account.dailyPnlPct)})
+              </span>
             </div>
-            <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
-              <span>Concurrent Positions:</span>
-              <span>{positions.length} / {snapshot.settings.risk.maxConcurrentPositions}</span>
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+              <div
+                className={`h-full transition-all ${
+                  dailyLossUsedPct > 75 ? 'bg-rose-500' : 'bg-amber-400'
+                }`}
+                style={{ width: `${dailyLossUsedPct}%` }}
+              />
+            </div>
+            <div className="mt-1 flex justify-between text-[10px] text-slate-500">
+              <span>Protected by Auto Break-Even + SL</span>
+              <span>Limit: -{account.dailyLossLimitPct}%</span>
             </div>
           </div>
         </div>
 
-        {/* Right: Asset Preferences (Donut Chart + Breakdown) */}
-        <div className="flex flex-col justify-between rounded-2xl border border-slate-800 bg-[#090D16] p-5 shadow-sm lg:col-span-8">
+        {/* Right: Asset Preferences (Real Donut Chart) */}
+        <div className="flex flex-col justify-between rounded-xl border border-slate-800/90 bg-[#0E1420] p-4 shadow-sm lg:col-span-8">
           <div>
-            <div className="mb-4 flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <h2 className="text-base font-bold text-slate-100">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-bold text-slate-100">
                   Asset Preferences
                 </h2>
-                <Info className="h-3.5 w-3.5 text-slate-500" />
+                <span
+                  className="inline-flex items-center gap-1 rounded border border-slate-700/80 bg-[#080C14] px-2 py-0.5 text-[10px] font-semibold text-slate-400"
+                  title="Diambil dari posisi nyata atau watchlist likuiditas Binance"
+                >
+                  <Info className="h-3 w-3 text-cyan-400" />
+                  {assetAllocation.isWatchlistPreview
+                    ? 'Scanner Watchlist Share (Pre-Trade)'
+                    : 'Executed Exposure Share'}
+                </span>
               </div>
+
               <button
                 type="button"
-                className="flex items-center gap-1.5 rounded-lg border border-slate-700/80 bg-[#0E1526] px-2.5 py-1 text-xs font-semibold text-slate-200 transition hover:bg-slate-800"
+                onClick={onScanNow}
+                disabled={busyAction === 'scan' || snapshot.status.scannerInProgress}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/20 disabled:opacity-50"
               >
-                365 Days
-                <ChevronDown className="h-3 w-3 text-slate-400" />
+                <RefreshCw
+                  className={`h-3 w-3 ${
+                    snapshot.status.scannerInProgress ? 'animate-spin' : ''
+                  }`}
+                />
+                Scan Market
               </button>
             </div>
 
-            {/* Donut Chart and Legend Columns */}
-            <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-center">
-              {/* SVG Donut */}
-              <div className="relative h-44 w-44 shrink-0">
+            <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-center">
+              {/* Crisp Aspect-Square Donut Chart */}
+              <div className="relative h-36 w-36 shrink-0">
                 <svg viewBox="0 0 100 100" className="h-full w-full -rotate-90">
                   {(() => {
                     let accPct = 0;
-                    return assetSlices.map((slice) => {
-                      const radius = 35;
-                      const circum = 2 * Math.PI * radius; // ~219.9
-                      const dash = (slice.pct / 100) * circum;
+                    return assetAllocation.items.map((slice) => {
+                      const radius = 36;
+                      const circum = 2 * Math.PI * radius;
+                      const dash = Math.max((slice.pct / 100) * circum, 0.5);
                       const offset = (accPct / 100) * circum;
                       accPct += slice.pct;
                       return (
@@ -571,50 +673,52 @@ export function OverviewTab({
                           r={radius}
                           fill="transparent"
                           stroke={slice.color}
-                          strokeWidth="14"
-                          strokeDasharray={`${dash} ${circum - dash}`}
+                          strokeWidth="13"
+                          strokeDasharray={`${dash} ${Math.max(circum - dash, 0)}`}
                           strokeDashoffset={-offset}
-                          className="transition-all hover:opacity-80"
+                          className="cursor-pointer transition-opacity hover:opacity-80"
+                          onClick={() => slice.symbol && onOpenChart(slice.symbol)}
                         />
                       );
                     });
                   })()}
                 </svg>
-                {/* Center hole text */}
                 <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
                   <span className="text-[10px] font-semibold text-slate-400 uppercase">
-                    Assets
+                    {assetAllocation.isWatchlistPreview ? 'Watchlist' : 'Traded'}
                   </span>
                   <span className="text-sm font-bold text-slate-100">
-                    {assetSlices.length} Pairs
+                    {assetAllocation.items.length} Assets
                   </span>
                 </div>
               </div>
 
-              {/* Legend Grid: 3 Columns like Binance */}
-              <div className="grid flex-1 grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
-                {assetSlices.map((slice) => (
+              {/* Interactive Coin Legend */}
+              <div className="grid w-full flex-1 grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-3">
+                {assetAllocation.items.map((slice) => (
                   <button
                     key={slice.name}
                     type="button"
-                    onClick={() => {
-                      if (slice.name !== 'OTHER') {
-                        onSelectSymbol(`${slice.name}USDT`);
-                        onOpenChart(`${slice.name}USDT`);
-                      }
-                    }}
-                    className="flex items-center gap-2 rounded p-1 text-left transition hover:bg-slate-800/40"
-                    title={`Click to inspect ${slice.name}USDT realtime chart`}
+                    disabled={!slice.symbol}
+                    onClick={() => slice.symbol && onOpenChart(slice.symbol)}
+                    className="group flex items-center justify-between gap-2 rounded-lg border border-transparent px-2 py-1.5 text-left transition hover:border-slate-700/80 hover:bg-[#080C14] disabled:cursor-default"
+                    title={
+                      slice.symbol
+                        ? `Klik untuk buka tab grafik realtime ${slice.symbol}`
+                        : undefined
+                    }
                   >
-                    <span
-                      className="h-2 w-4 rounded-sm"
-                      style={{ backgroundColor: slice.color }}
-                    />
-                    <span className="font-semibold text-slate-200">
-                      {slice.name}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="h-2.5 w-3.5 shrink-0 rounded-sm"
+                        style={{ backgroundColor: slice.color }}
+                      />
+                      <span className="font-semibold text-slate-200 group-hover:text-cyan-300">
+                        {slice.name}
+                      </span>
+                    </div>
                     <span className="font-mono-num text-[11px] text-slate-400">
-                      {slice.pct}%
+                      {slice.pct.toFixed(2)}%
                     </span>
                   </button>
                 ))}
@@ -622,26 +726,27 @@ export function OverviewTab({
             </div>
           </div>
 
-          <div className="mt-4 text-[11px] text-slate-500">
-            *Figures are refreshed every 1-2 hours. Click on any coin to view its realtime candlestick chart.
+          <div className="mt-4 flex items-center justify-between border-t border-slate-800/60 pt-2.5 text-[11px] text-slate-500">
+            <span>
+              *Klik koin mana saja di atas atau di tabel bawah untuk memunculkan Tab Grafik Realtime.
+            </span>
           </div>
         </div>
       </div>
 
       {/* ============================================================ */}
-      {/* ROW 3: POSITION HISTORY & POSITIONS TABS (EXACT BINANCE UI)   */}
+      {/* ROW 3: POSITIONS, POSITION HISTORY, AUTO-SCANNER, NEWS       */}
       {/* ============================================================ */}
-      <div className="rounded-2xl border border-slate-800 bg-[#090D16] p-5 shadow-sm">
-        {/* Tab Headers */}
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
-          <div className="flex items-center gap-4 text-sm font-bold">
+      <div className="rounded-xl border border-slate-800/90 bg-[#0E1420] p-5 shadow-sm">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-2.5">
+          <div className="flex flex-wrap items-center gap-5 text-sm font-bold">
             <button
               type="button"
               onClick={() => setBottomTab('positions')}
-              className={`pb-1 transition ${
+              className={`-mb-[11px] border-b-2 pb-2.5 transition ${
                 bottomTab === 'positions'
-                  ? 'border-b-2 border-amber-400 text-slate-100'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'border-[#F0B90B] text-slate-100'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
               }`}
             >
               Positions ({positions.length})
@@ -649,21 +754,21 @@ export function OverviewTab({
             <button
               type="button"
               onClick={() => setBottomTab('history')}
-              className={`pb-1 transition ${
+              className={`-mb-[11px] border-b-2 pb-2.5 transition ${
                 bottomTab === 'history'
-                  ? 'border-b-2 border-amber-400 text-slate-100'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'border-[#F0B90B] text-slate-100'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
               }`}
             >
-              Position History ({closedTrades.length})
+              Position History ({filteredClosed.length})
             </button>
             <button
               type="button"
               onClick={() => setBottomTab('scanner')}
-              className={`pb-1 transition ${
+              className={`-mb-[11px] border-b-2 pb-2.5 transition ${
                 bottomTab === 'scanner'
-                  ? 'border-b-2 border-amber-400 text-slate-100'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'border-[#F0B90B] text-slate-100'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
               }`}
             >
               Auto-Scanner Pairs ({scanner.length})
@@ -671,157 +776,49 @@ export function OverviewTab({
             <button
               type="button"
               onClick={() => setBottomTab('news')}
-              className={`pb-1 transition ${
+              className={`-mb-[11px] border-b-2 pb-2.5 transition ${
                 bottomTab === 'news'
-                  ? 'border-b-2 border-amber-400 text-slate-100'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'border-[#F0B90B] text-slate-100'
+                  : 'border-transparent text-slate-400 hover:text-slate-200'
               }`}
             >
               Latest News ({news.length})
             </button>
           </div>
 
-          {/* Sort Control */}
           {bottomTab === 'history' && (
             <div className="flex items-center gap-2 text-xs">
               <span className="text-slate-400">Sort By</span>
-              <button
-                type="button"
-                onClick={() =>
-                  setSortOrder(
-                    sortOrder === 'closingTime' ? 'openingTime' : 'closingTime',
-                  )
+              <select
+                value={sortOrder}
+                onChange={(e) =>
+                  setSortOrder(e.target.value as 'closingTime' | 'openingTime')
                 }
-                className="flex items-center gap-1.5 rounded-lg border border-slate-700/80 bg-[#0E1526] px-2.5 py-1 font-semibold text-slate-200 transition hover:bg-slate-800"
+                className="rounded-lg border border-slate-700/80 bg-[#080C14] px-2.5 py-1 font-semibold text-slate-200 outline-none"
               >
-                {sortOrder === 'closingTime' ? 'Closing Time' : 'Opening Time'}
-                <ChevronDown className="h-3 w-3 text-slate-400" />
-              </button>
+                <option value="closingTime">Closing Time</option>
+                <option value="openingTime">Opening Time</option>
+              </select>
             </div>
           )}
         </div>
 
-        {/* ============================================================ */}
-        {/* SUBTAB CONTENT: POSITION HISTORY                             */}
-        {/* ============================================================ */}
-        {bottomTab === 'history' && (
-          <div className="space-y-3">
-            {closedTrades.length === 0 ? (
-              <div className="py-12 text-center text-xs text-slate-500">
-                No closed positions yet. When the bot executes and closes positions (via TP1, Trailing Stop, or SL), each trade will be recorded here in full detail.
-              </div>
-            ) : (
-              closedTrades.map((trade) => {
-                const isWin = trade.realizedPnl >= 0;
-                return (
-                  <div
-                    key={trade.id}
-                    onClick={() => {
-                      onSelectSymbol(trade.symbol);
-                      onOpenChart(trade.symbol);
-                    }}
-                    className="group relative cursor-pointer rounded-xl border border-slate-800/80 bg-[#0D1322] p-4 transition hover:border-slate-700 hover:bg-[#10182C]"
-                  >
-                    {/* Card Header: Symbol, Perp, Lev, Direction, Closed */}
-                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-slate-100 group-hover:text-cyan-300">
-                          {trade.symbol}
-                        </span>
-                        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-slate-400">
-                          Perp
-                        </span>
-                        <span className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] font-bold text-slate-300">
-                          {snapshot.settings.risk.defaultLeverage}x
-                        </span>
-                        <span
-                          className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                            trade.side === 'LONG'
-                              ? 'bg-emerald-500/15 text-emerald-400'
-                              : 'bg-rose-500/15 text-rose-400'
-                          }`}
-                        >
-                          Isolated {trade.side === 'LONG' ? 'Long' : 'Short'}
-                        </span>
-                        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
-                          Closed
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-1.5 text-xs text-slate-400 group-hover:text-cyan-400">
-                        <Maximize2 className="h-3.5 w-3.5" />
-                        <span>Click for Realtime Chart</span>
-                      </div>
-                    </div>
-
-                    {/* Card Data Grid: 5 Columns like Binance */}
-                    <div className="grid grid-cols-2 gap-y-2 text-xs sm:grid-cols-5 sm:gap-x-4">
-                      <div>
-                        <div className="text-[11px] text-slate-400">Opened</div>
-                        <div className="font-mono-num mt-0.5 text-slate-200">
-                          {new Date(trade.createdAt - 120_000).toISOString().replace('T', ' ').slice(0, 19)}
-                        </div>
-                        <div className="mt-1 text-[11px] text-slate-400">Avg. Close Price</div>
-                        <div className="font-mono-num text-slate-200">
-                          {fmtPrice(trade.price)} USDT
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="text-[11px] text-slate-400">Entry Price</div>
-                        <div className="font-mono-num mt-0.5 text-slate-200">
-                          {fmtPrice(trade.price)} USDT
-                        </div>
-                        <div className="mt-1 text-[11px] text-slate-400">Closed Vol.</div>
-                        <div className="font-mono-num text-slate-200">
-                          {trade.quantity} {trade.symbol.replace('USDT', '')}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="text-[11px] text-slate-400">Max. Open Interest</div>
-                        <div className="font-mono-num mt-0.5 text-slate-200">
-                          {trade.quantity} {trade.symbol.replace('USDT', '')}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="text-[11px] text-slate-400">Closing PNL</div>
-                        <div
-                          className={`font-mono-num mt-0.5 text-sm font-bold ${
-                            isWin ? 'text-[#10B981]' : 'text-rose-400'
-                          }`}
-                        >
-                          {isWin ? '+' : ''}
-                          {trade.realizedPnl.toFixed(2)} USDT
-                        </div>
-                        <div className="text-[10px] text-slate-500">
-                          {trade.action.replace('CLOSE_', '')}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="text-[11px] text-slate-400">Closed</div>
-                        <div className="font-mono-num mt-0.5 text-slate-200">
-                          {new Date(trade.createdAt).toISOString().replace('T', ' ').slice(0, 19)}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        )}
-
-        {/* ============================================================ */}
-        {/* SUBTAB CONTENT: ACTIVE POSITIONS                             */}
-        {/* ============================================================ */}
+        {/* -------------------- ACTIVE POSITIONS -------------------- */}
         {bottomTab === 'positions' && (
           <div className="space-y-3">
             {positions.length === 0 ? (
-              <div className="py-12 text-center text-xs text-slate-500">
-                No active positions at this moment. The bot scans top pairs every 60s and enters automatically on high-probability setups.
+              <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-800 py-10 text-center">
+                <p className="text-xs text-slate-400">
+                  Belum ada posisi aktif saat ini. Bot memindai market setiap{' '}
+                  {snapshot.settings.strategy.scanIntervalSeconds}s.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setBottomTab('scanner')}
+                  className="mt-3 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20"
+                >
+                  Lihat Top Auto-Scanner Pairs
+                </button>
               </div>
             ) : (
               positions.map((pos) => {
@@ -829,25 +826,26 @@ export function OverviewTab({
                   pos.isolatedMargin > 0
                     ? (pos.unrealizedPnl / pos.isolatedMargin) * 100
                     : 0;
+                const base = pos.symbol.replace('USDT', '');
                 return (
                   <div
                     key={pos.id}
-                    className="rounded-xl border border-slate-800 bg-[#0D1322] p-4 transition hover:border-slate-700"
+                    className="rounded-xl border border-slate-800/90 bg-[#080C14] p-4 transition hover:border-slate-700"
                   >
                     <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => {
-                            onSelectSymbol(pos.symbol);
-                            onOpenChart(pos.symbol);
-                          }}
+                          onClick={() => onOpenChart(pos.symbol)}
                           className="text-sm font-bold text-slate-100 hover:text-cyan-300"
                         >
                           {pos.symbol}
                         </button>
                         <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-slate-400">
                           Perp
+                        </span>
+                        <span className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] font-bold text-slate-300">
+                          {pos.leverage}x
                         </span>
                         <span
                           className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
@@ -856,7 +854,7 @@ export function OverviewTab({
                               : 'bg-rose-500/15 text-rose-400'
                           }`}
                         >
-                          Isolated {pos.side} {pos.leverage}x
+                          Isolated {pos.side === 'LONG' ? 'Long' : 'Short'}
                         </span>
                         {pos.tp1Hit && (
                           <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
@@ -873,34 +871,30 @@ export function OverviewTab({
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => {
-                            onSelectSymbol(pos.symbol);
-                            onOpenChart(pos.symbol);
-                          }}
-                          className="flex items-center gap-1 rounded border border-slate-700 bg-slate-800/80 px-2.5 py-1 text-xs font-semibold text-slate-200 hover:bg-slate-700"
+                          onClick={() => onOpenChart(pos.symbol)}
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-[#0E1420] px-2.5 py-1 text-xs font-semibold text-cyan-300 hover:bg-slate-800"
                         >
-                          <Maximize2 className="h-3.5 w-3.5 text-cyan-400" />
-                          View Chart
+                          <LineChart className="h-3.5 w-3.5" />
+                          Grafik Realtime
                         </button>
-
                         <button
                           type="button"
                           onClick={() => onClosePosition(pos.id)}
                           disabled={busyAction === `close-${pos.id}`}
-                          className="rounded border border-rose-500/40 bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-500/20 disabled:opacity-50"
+                          className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-500/20 disabled:opacity-50"
                         >
                           Close
                         </button>
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-y-2 text-xs sm:grid-cols-5 sm:gap-x-4">
+                    <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-5">
                       <div>
                         <div className="text-[11px] text-slate-400">Entry Price</div>
                         <div className="font-mono-num mt-0.5 text-slate-200">
                           ${fmtPrice(pos.entryPrice)}
                         </div>
-                        <div className="mt-1 text-[11px] text-slate-400">Mark Price</div>
+                        <div className="mt-1.5 text-[11px] text-slate-400">Mark Price</div>
                         <div className="font-mono-num text-cyan-300">
                           ${fmtPrice(pos.markPrice)}
                         </div>
@@ -909,9 +903,9 @@ export function OverviewTab({
                       <div>
                         <div className="text-[11px] text-slate-400">Position Size</div>
                         <div className="font-mono-num mt-0.5 text-slate-200">
-                          {pos.remainingQuantity}
+                          {pos.remainingQuantity} {base}
                         </div>
-                        <div className="mt-1 text-[11px] text-slate-400">Margin Used</div>
+                        <div className="mt-1.5 text-[11px] text-slate-400">Margin Used</div>
                         <div className="font-mono-num text-slate-200">
                           {fmtUsdt(pos.isolatedMargin)}
                         </div>
@@ -922,7 +916,7 @@ export function OverviewTab({
                         <div className="font-mono-num mt-0.5 text-rose-400">
                           ${fmtPrice(pos.stopLoss)}
                         </div>
-                        <div className="mt-1 text-[11px] text-slate-400">Take Profit</div>
+                        <div className="mt-1.5 text-[11px] text-slate-400">Take Profit</div>
                         <div className="font-mono-num text-emerald-400">
                           ${fmtPrice(pos.takeProfit1)} / ${fmtPrice(pos.takeProfit2)}
                         </div>
@@ -947,6 +941,10 @@ export function OverviewTab({
                         <div className="font-mono-num mt-0.5 text-amber-300">
                           ${fmtPrice(pos.liquidationPrice)}
                         </div>
+                        <div className="mt-1.5 text-[11px] text-slate-400">Opened</div>
+                        <div className="font-mono-num text-[11px] text-slate-300">
+                          {fmtLocalDateTime(pos.openedAt)}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -956,66 +954,225 @@ export function OverviewTab({
           </div>
         )}
 
-        {/* ============================================================ */}
-        {/* SUBTAB CONTENT: AUTO-SCANNER PAIRS                           */}
-        {/* ============================================================ */}
-        {bottomTab === 'scanner' && (
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 md:grid-cols-4">
-            {scanner.map((c) => (
-              <button
-                key={c.symbol}
-                type="button"
-                onClick={() => {
-                  onSelectSymbol(c.symbol);
-                  onOpenChart(c.symbol);
-                }}
-                className="group flex items-center justify-between rounded-xl border border-slate-800 bg-[#0D1322] p-3 text-left transition hover:border-cyan-500/40 hover:bg-[#10182C]"
-              >
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-bold text-slate-100 group-hover:text-cyan-300">
-                      {c.symbol}
-                    </span>
-                    <span className="rounded bg-slate-800 px-1 py-0.5 text-[9px] font-bold text-slate-400">
-                      Vol ${fmtCompactUsd(c.quoteVolume24h)}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-[11px] text-slate-500">
-                    Scanner Score: {c.scannerScore}
-                  </div>
-                </div>
+        {/* -------------------- POSITION HISTORY (REAL CLOSED POSITIONS) -------------------- */}
+        {bottomTab === 'history' && (
+          <div className="space-y-3">
+            {filteredClosed.length === 0 ? (
+              <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-800 py-10 text-center">
+                <p className="text-xs text-slate-400">
+                  Belum ada posisi tertutup pada rentang waktu ini ({timeRange}).
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setBottomTab('scanner')}
+                  className="mt-3 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20"
+                >
+                  Inspect Coin di Auto-Scanner
+                </button>
+              </div>
+            ) : (
+              filteredClosed.map((pos) => {
+                const isWin = pos.realizedPnl >= 0;
+                const avgClose = computeAvgClosePrice(pos, trades);
+                const base = pos.symbol.replace('USDT', '');
+                const closedTs = pos.closedAt ?? pos.openedAt;
 
-                <div className="text-right">
-                  <div className="font-mono-num text-xs font-semibold text-slate-100">
-                    ${fmtPrice(c.lastPrice)}
-                  </div>
+                return (
                   <div
-                    className={`font-mono-num text-[11px] font-semibold ${
-                      c.priceChangePercent24h >= 0 ? 'text-[#10B981]' : 'text-rose-400'
-                    }`}
+                    key={pos.id}
+                    onClick={() => onOpenChart(pos.symbol)}
+                    className="group cursor-pointer rounded-xl border border-slate-800/90 bg-[#080C14] p-4 transition hover:border-cyan-500/40 hover:bg-[#0B1220]"
                   >
-                    {fmtPct(c.priceChangePercent24h)}
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-bold text-slate-100 group-hover:text-cyan-300">
+                          {pos.symbol}
+                        </span>
+                        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-slate-400">
+                          Perp
+                        </span>
+                        <span className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] font-bold text-slate-300">
+                          {pos.leverage}x
+                        </span>
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                            pos.side === 'LONG'
+                              ? 'bg-emerald-500/15 text-emerald-400'
+                              : 'bg-rose-500/15 text-rose-400'
+                          }`}
+                        >
+                          Isolated {pos.side === 'LONG' ? 'Long' : 'Short'}
+                        </span>
+                        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+                          Closed
+                        </span>
+                      </div>
+
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-slate-400 group-hover:text-cyan-300">
+                        <LineChart className="h-3.5 w-3.5" />
+                        Buka Tab Grafik
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-5">
+                      <div>
+                        <div className="text-[11px] text-slate-400">Opened</div>
+                        <div className="font-mono-num mt-0.5 text-slate-200">
+                          {fmtLocalDateTime(pos.openedAt)}
+                        </div>
+                        <div className="mt-1.5 text-[11px] text-slate-400">
+                          Avg. Close Price
+                        </div>
+                        <div className="font-mono-num text-slate-200">
+                          {fmtPrice(avgClose)} USDT
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-[11px] text-slate-400">Entry Price</div>
+                        <div className="font-mono-num mt-0.5 text-slate-200">
+                          {fmtPrice(pos.entryPrice)} USDT
+                        </div>
+                        <div className="mt-1.5 text-[11px] text-slate-400">
+                          Closed Vol.
+                        </div>
+                        <div className="font-mono-num text-slate-200">
+                          {pos.quantity} {base}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-[11px] text-slate-400">
+                          Max. Open Interest
+                        </div>
+                        <div className="font-mono-num mt-0.5 text-slate-200">
+                          {pos.quantity} {base}
+                        </div>
+                        <div className="mt-1.5 text-[11px] text-slate-400">
+                          Hold Duration
+                        </div>
+                        <div className="font-mono-num text-slate-300">
+                          {fmtDuration(pos.openedAt, closedTs)}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-[11px] text-slate-400">Closing PNL</div>
+                        <div
+                          className={`font-mono-num mt-0.5 text-sm font-bold ${
+                            isWin ? 'text-[#10B981]' : 'text-rose-400'
+                          }`}
+                        >
+                          {isWin ? '+' : ''}
+                          {pos.realizedPnl.toFixed(2)} USDT
+                        </div>
+                        <div className="mt-1 truncate text-[10px] text-slate-500">
+                          {pos.closeReason ?? 'Closed'}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-[11px] text-slate-400">Closed</div>
+                        <div className="font-mono-num mt-0.5 text-slate-200">
+                          {fmtLocalDateTime(closedTs)}
+                        </div>
+                        <div className="mt-1.5 text-[11px] text-slate-400">Fees Paid</div>
+                        <div className="font-mono-num text-slate-400">
+                          -{pos.feesPaid.toFixed(3)} USDT
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </button>
-            ))}
+                );
+              })
+            )}
           </div>
         )}
 
-        {/* ============================================================ */}
-        {/* SUBTAB CONTENT: NEWS & AI SENTIMENT                          */}
-        {/* ============================================================ */}
+        {/* -------------------- AUTO-SCANNER PAIRS -------------------- */}
+        {bottomTab === 'scanner' && (
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+            {scanner.length === 0 ? (
+              <div className="col-span-full py-10 text-center text-xs text-slate-500">
+                Memindai pasangan likuid Binance Futures...
+              </div>
+            ) : (
+              scanner.map((c) => {
+                const sig = signals.find((s) => s.symbol === c.symbol);
+                return (
+                  <button
+                    key={c.symbol}
+                    type="button"
+                    onClick={() => onOpenChart(c.symbol)}
+                    className="group flex flex-col justify-between gap-2 rounded-xl border border-slate-800/90 bg-[#080C14] p-3.5 text-left transition hover:border-cyan-500/50 hover:bg-[#0C1322]"
+                  >
+                    <div className="flex w-full items-start justify-between gap-2">
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-bold text-slate-100 group-hover:text-cyan-300">
+                            {c.symbol}
+                          </span>
+                          {sig && sig.action !== 'HOLD' && (
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                                sig.action === 'LONG'
+                                  ? 'bg-emerald-500/20 text-emerald-300'
+                                  : 'bg-rose-500/20 text-rose-300'
+                              }`}
+                            >
+                              {sig.action} {sig.confidence}%
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-slate-400">
+                          Vol {fmtCompactUsd(c.quoteVolume24h)} · Score {c.scannerScore}
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <div className="font-mono-num text-xs font-bold text-slate-100">
+                          ${fmtPrice(c.lastPrice)}
+                        </div>
+                        <div
+                          className={`font-mono-num text-[11px] font-semibold ${
+                            c.priceChangePercent24h >= 0
+                              ? 'text-[#10B981]'
+                              : 'text-rose-400'
+                          }`}
+                        >
+                          {fmtPct(c.priceChangePercent24h)}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex w-full items-center justify-between border-t border-slate-800/70 pt-2 text-[10px] text-slate-500">
+                      <span>
+                        {sig ? sig.regime.replaceAll('_', ' ') : 'Monitoring'}
+                      </span>
+                      <span className="inline-flex items-center gap-1 font-semibold text-cyan-400/80 group-hover:text-cyan-300">
+                        <LineChart className="h-3 w-3" />
+                        Lihat Grafik
+                      </span>
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        )}
+
+        {/* -------------------- LATEST NEWS & AI -------------------- */}
         {bottomTab === 'news' && (
-          <div className="space-y-2">
+          <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
             {news.slice(0, 8).map((item) => (
               <a
                 key={item.id}
                 href={item.url}
                 target="_blank"
                 rel="noreferrer"
-                className="block rounded-xl border border-slate-800 bg-[#0D1322] p-3 transition hover:border-slate-700"
+                className="block rounded-xl border border-slate-800/90 bg-[#080C14] p-3.5 transition hover:border-slate-700"
               >
-                <div className="mb-1 flex items-center justify-between gap-2 text-[10px]">
+                <div className="mb-1.5 flex items-center justify-between gap-2 text-[10px]">
                   <div className="flex items-center gap-1.5">
                     <span
                       className={`rounded px-1.5 py-0.5 font-bold ${
@@ -1028,19 +1185,28 @@ export function OverviewTab({
                               : 'bg-slate-700/60 text-slate-300'
                       }`}
                     >
-                      {item.isBlackSwan ? 'BLACK SWAN' : `${item.sentiment} ${item.score}`}
+                      {item.isBlackSwan
+                        ? 'BLACK SWAN'
+                        : `${item.sentiment} ${item.score >= 0 ? '+' : ''}${item.score}`}
                     </span>
                     <span className="text-cyan-300">
                       {item.symbols.slice(0, 3).join(', ')}
                     </span>
                   </div>
-                  <span className="text-slate-500">{fmtTimeAgo(item.publishedAt)}</span>
+                  <span className="text-slate-500">
+                    {fmtTimeAgo(item.publishedAt)}
+                  </span>
                 </div>
-                <div className="text-xs font-semibold text-slate-200">
+                <div className="line-clamp-2 text-xs font-semibold text-slate-200">
                   {item.title}
                 </div>
               </a>
             ))}
+            {news.length === 0 && (
+              <div className="col-span-full py-10 text-center text-xs text-slate-500">
+                Mengambil berita crypto & sentimen AI...
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1049,7 +1215,7 @@ export function OverviewTab({
       {account.circuitBreakerTripped && (
         <div className="flex items-center gap-2 rounded-xl border border-rose-500/50 bg-rose-950/50 p-3 text-xs text-rose-200">
           <AlertTriangle className="h-4 w-4 shrink-0 text-rose-400" />
-          Daily Loss Circuit Breaker triggered (-{account.dailyLossLimitPct}% max daily drawdown). Auto-trading is paused until UTC midnight or manual restart.
+          Daily Loss Circuit Breaker aktif (-{account.dailyLossLimitPct}% max daily drawdown). Auto-trading dijeda hingga pergantian hari UTC atau restart manual.
         </div>
       )}
     </div>

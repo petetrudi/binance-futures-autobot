@@ -13,10 +13,10 @@ export function BacktestTab({ defaultSymbol }: BacktestTabProps) {
   const [symbol, setSymbol] = useState(defaultSymbol || 'BTCUSDT');
   const [interval, setInterval] = useState<'15m' | '1h'>('15m');
   const [bars, setBars] = useState(400);
-  const [initialCapital, setInitialCapital] = useState(10_000);
-  const [leverage, setLeverage] = useState(3);
-  const [riskPerTradePct, setRiskPerTradePct] = useState(1.5);
-  const [minConfidence, setMinConfidence] = useState(62);
+  const [initialCapital, setInitialCapital] = useState(500);
+  const [leverage, setLeverage] = useState(2);
+  const [riskPerTradePct, setRiskPerTradePct] = useState(0.75);
+  const [minConfidence, setMinConfidence] = useState(72);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,7 +104,7 @@ export function BacktestTab({ defaultSymbol }: BacktestTabProps) {
     <div className="space-y-4">
       <form
         onSubmit={handleRun}
-        className="rounded-xl border border-slate-800 bg-[#111827] p-4"
+        className="rounded-xl border border-slate-800/90 bg-[#0E1420] p-4"
       >
         <div className="mb-3 flex items-center gap-2">
           <FlaskConical className="h-4 w-4 text-cyan-400" />
@@ -211,13 +211,13 @@ export function BacktestTab({ defaultSymbol }: BacktestTabProps) {
       {result && (
         <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <div className="rounded-xl border border-slate-800 bg-[#111827] p-3">
+            <div className="rounded-xl border border-slate-800/90 bg-[#0E1420] p-3">
               <div className="text-[11px] text-slate-400">Final Equity</div>
               <div className="font-mono-num mt-1 text-base font-bold text-slate-100">
                 {fmtUsdt(result.finalEquity)}
               </div>
             </div>
-            <div className="rounded-xl border border-slate-800 bg-[#111827] p-3">
+            <div className="rounded-xl border border-slate-800/90 bg-[#0E1420] p-3">
               <div className="text-[11px] text-slate-400">Net PnL</div>
               <div
                 className={`font-mono-num mt-1 text-base font-bold ${
@@ -227,25 +227,25 @@ export function BacktestTab({ defaultSymbol }: BacktestTabProps) {
                 {fmtUsdt(result.netPnlUsdt, true)} ({fmtPct(result.netPnlPct)})
               </div>
             </div>
-            <div className="rounded-xl border border-slate-800 bg-[#111827] p-3">
+            <div className="rounded-xl border border-slate-800/90 bg-[#0E1420] p-3">
               <div className="text-[11px] text-slate-400">Win Rate</div>
               <div className="font-mono-num mt-1 text-base font-bold text-slate-100">
                 {result.winRatePct.toFixed(1)}% ({result.totalTrades} trades)
               </div>
             </div>
-            <div className="rounded-xl border border-slate-800 bg-[#111827] p-3">
+            <div className="rounded-xl border border-slate-800/90 bg-[#0E1420] p-3">
               <div className="text-[11px] text-slate-400">Profit Factor</div>
               <div className="font-mono-num mt-1 text-base font-bold text-cyan-300">
                 {result.profitFactor.toFixed(2)}
               </div>
             </div>
-            <div className="rounded-xl border border-slate-800 bg-[#111827] p-3">
+            <div className="rounded-xl border border-slate-800/90 bg-[#0E1420] p-3">
               <div className="text-[11px] text-slate-400">Max Drawdown</div>
               <div className="font-mono-num mt-1 text-base font-bold text-amber-300">
                 -{result.maxDrawdownPct.toFixed(2)}%
               </div>
             </div>
-            <div className="rounded-xl border border-slate-800 bg-[#111827] p-3">
+            <div className="rounded-xl border border-slate-800/90 bg-[#0E1420] p-3">
               <div className="text-[11px] text-slate-400">Sharpe Ratio</div>
               <div className="font-mono-num mt-1 text-base font-bold text-slate-100">
                 {result.sharpeRatio.toFixed(2)}
@@ -253,14 +253,14 @@ export function BacktestTab({ defaultSymbol }: BacktestTabProps) {
             </div>
           </div>
 
-          <div className="rounded-xl border border-slate-800 bg-[#111827] p-4">
+          <div className="rounded-xl border border-slate-800/90 bg-[#0E1420] p-4">
             <h3 className="mb-2 text-xs font-bold tracking-wider text-slate-300 uppercase">
               Equity Curve ({result.symbol} · {result.barsTested} bars)
             </h3>
             <div ref={chartRef} className="h-[260px] w-full overflow-hidden rounded-lg" />
           </div>
 
-          <div className="overflow-x-auto rounded-xl border border-slate-800 bg-[#111827] p-4">
+          <div className="overflow-x-auto rounded-xl border border-slate-800/90 bg-[#0E1420] p-4">
             <h3 className="mb-2 text-xs font-bold tracking-wider text-slate-300 uppercase">
               Simulated Executions ({result.trades.length})
             </h3>

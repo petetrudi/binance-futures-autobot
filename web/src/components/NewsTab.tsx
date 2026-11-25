@@ -33,13 +33,16 @@ export function NewsTab({ snapshot, busyAction, onRefreshNews }: NewsTabProps) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-[#111827] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800/90 bg-[#0E1420] p-4">
         <div>
           <div className="flex items-center gap-2">
             <Newspaper className="h-4 w-4 text-amber-400" />
             <h2 className="text-sm font-bold text-slate-100">
               Crypto News & Sentiment Intelligence (
-              {snapshot.status.geminiEnabled ? 'Gemini 3.8 Flash AI' : 'Lexicon Engine'})
+              {snapshot.status.geminiEnabled
+                ? snapshot.settings.strategy.geminiModel
+                : 'Lexicon Engine'}
+              )
             </h2>
           </div>
           <p className="mt-0.5 text-xs text-slate-400">
@@ -51,7 +54,7 @@ export function NewsTab({ snapshot, busyAction, onRefreshNews }: NewsTabProps) {
           <select
             value={symbolFilter}
             onChange={(e) => setSymbolFilter(e.target.value)}
-            className="rounded-lg border border-slate-700 bg-[#090D16] px-2.5 py-1.5 text-xs text-slate-200"
+            className="rounded-lg border border-slate-700 bg-[#080C14] px-2.5 py-1.5 text-xs text-slate-200"
           >
             {availableSymbols.map((s) => (
               <option key={s} value={s}>
@@ -63,7 +66,7 @@ export function NewsTab({ snapshot, busyAction, onRefreshNews }: NewsTabProps) {
           <select
             value={impactFilter}
             onChange={(e) => setImpactFilter(e.target.value as NewsImpact | 'ALL')}
-            className="rounded-lg border border-slate-700 bg-[#090D16] px-2.5 py-1.5 text-xs text-slate-200"
+            className="rounded-lg border border-slate-700 bg-[#080C14] px-2.5 py-1.5 text-xs text-slate-200"
           >
             <option value="ALL">All Impact Levels</option>
             <option value="CRITICAL">CRITICAL</option>
@@ -95,7 +98,7 @@ export function NewsTab({ snapshot, busyAction, onRefreshNews }: NewsTabProps) {
             className={`rounded-xl border p-4 transition ${
               item.isBlackSwan
                 ? 'border-rose-500/60 bg-rose-950/30'
-                : 'border-slate-800 bg-[#111827] hover:border-slate-700'
+                : 'border-slate-800/90 bg-[#0E1420] hover:border-slate-700'
             }`}
           >
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">

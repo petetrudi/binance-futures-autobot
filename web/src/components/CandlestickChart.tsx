@@ -17,6 +17,8 @@ interface CandlestickChartProps {
   loading: boolean;
   activePosition: Position | null;
   onIntervalChange: (interval: Timeframe) => void;
+  hideHeader?: boolean;
+  height?: number;
 }
 
 const TIMEFRAMES: Timeframe[] = ['5m', '15m', '1h', '4h'];
@@ -28,16 +30,19 @@ export function CandlestickChart({
   loading,
   activePosition,
   onIntervalChange,
+  hideHeader = false,
+  height = 390,
 }: CandlestickChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const matchedData = chartData && chartData.symbol === symbol ? chartData : null;
 
   useEffect(() => {
     const el = containerRef.current;
-    if (!el || !chartData || chartData.candles.length === 0) return;
+    if (!el || !matchedData || matchedData.candles.length === 0) return;
 
     const chart = createChart(el, {
       width: el.clientWidth,
-      height: 390,
+      height,
       layout: {
         background: { type: ColorType.Solid, color: '#0B111E' },
         textColor: '#94A3B8',
@@ -98,7 +103,7 @@ export function CandlestickChart({
     });
 
     candleSeries.setData(
-      chartData.candles.map((c) => ({
+      matchedData.candles.map((c) => ({
         time: Math.floor(c.openTime / 1000) as UTCTimestamp,
         open: c.open,
         high: c.high,
@@ -108,7 +113,7 @@ export function CandlestickChart({
     );
 
     volumeSeries.setData(
-      chartData.candles.map((c) => ({
+      matchedData.candles.map((c) => ({
         time: Math.floor(c.openTime / 1000) as UTCTimestamp,
         value: c.volume,
         color:
@@ -119,16 +124,16 @@ export function CandlestickChart({
     );
 
     ema9Series.setData(
-      chartData.ema9.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })),
+      matchedData.ema9.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })),
     );
     ema21Series.setData(
-      chartData.ema21.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })),
+      matchedData.ema21.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })),
     );
     ema50Series.setData(
-      chartData.ema50.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })),
+      matchedData.ema50.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })),
     );
 
-    if (activePosition) {
+    if (activePosition && activePosition.symbol === symbol) {
       candleSeries.createPriceLine({
         price: activePosition.entryPrice,
         color: '#38BDF8',
@@ -176,57 +181,69 @@ export function CandlestickChart({
       ro.disconnect();
       chart.remove();
     };
-  }, [chartData, activePosition]);
+  }, [matchedData, activePosition, height, symbol]);
 
-  const lastCandle = chartData?.candles.at(-1);
+  const lastCandle = matchedData?.candles.at(-1);
+  const showLoader = loading || !matchedData || matchedData.candles.length === 0;
 
   return (
-    <div className="rounded-xl border border-slate-800 bg-[#111827] p-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-3">
-          <h2 className="text-base font-bold tracking-wide text-slate-100">
-            {symbol}
-          </h2>
-          {lastCandle && (
-            <span className="font-mono-num text-sm font-semibold text-cyan-300">
-              ${fmtPrice(lastCandle.close)}
-            </span>
-          )}
-          <div className="hidden items-center gap-2 text-[11px] text-slate-400 sm:flex">
-            <span className="inline-flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-cyan-400" /> EMA9
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-amber-400" /> EMA21
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-purple-400" /> EMA50
-            </span>
+    <div
+      className={
+        hideHeader
+          ? 'w-full'
+          : 'rounded-xl border border-slate-800/90 bg-[#0E1420] p-4'
+      }
+    >
+      {!hideHeader && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-3">
+            <h2 className="text-base font-bold tracking-wide text-slate-100">
+              {symbol}
+            </h2>
+            {lastCandle && (
+              <span className="font-mono-num text-sm font-semibold text-cyan-300">
+                ${fmtPrice(lastCandle.close)}
+              </span>
+            )}
+            <div className="hidden items-center gap-2 text-[11px] text-slate-400 sm:flex">
+              <span className="inline-flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-cyan-400" /> EMA9
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-amber-400" /> EMA21
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-purple-400" /> EMA50
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1 rounded-lg border border-slate-800 bg-[#080C14] p-1">
+            {TIMEFRAMES.map((tf) => (
+              <button
+                key={tf}
+                type="button"
+                onClick={() => onIntervalChange(tf)}
+                className={`rounded px-2.5 py-1 text-xs font-semibold transition ${
+                  interval === tf
+                    ? 'bg-cyan-500/20 text-cyan-300'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {tf}
+              </button>
+            ))}
           </div>
         </div>
+      )}
 
-        <div className="flex items-center gap-1 rounded-lg border border-slate-800 bg-[#090D16] p-1">
-          {TIMEFRAMES.map((tf) => (
-            <button
-              key={tf}
-              type="button"
-              onClick={() => onIntervalChange(tf)}
-              className={`rounded px-2.5 py-1 text-xs font-semibold transition ${
-                interval === tf
-                  ? 'bg-cyan-500/20 text-cyan-300'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              {tf}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="relative h-[390px] w-full overflow-hidden rounded-lg border border-slate-800/80 bg-[#0B111E]">
-        {loading && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0B111E]/70 text-xs text-slate-400">
-            Loading {symbol} {interval} candles...
+      <div
+        className="relative w-full overflow-hidden rounded-lg border border-slate-800/80 bg-[#080C14]"
+        style={{ height }}
+      >
+        {showLoader && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#080C14]/85 text-xs text-slate-400">
+            Loading {symbol} {interval} realtime candles...
           </div>
         )}
         <div ref={containerRef} className="h-full w-full" />
