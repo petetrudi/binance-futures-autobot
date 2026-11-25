@@ -215,13 +215,16 @@ export class BotDatabase {
           'INSERT INTO paper_account (id, balance, starting_day_equity, day_key, updated_at) VALUES (1, ?, ?, ?, ?)',
         )
         .run(500, 500, utcDayKey(now), now);
+      this.ensureSetting('paper_initial_balance', 500, now);
     } else if (existingPaper.balance === 10_000) {
       this.db
         .prepare(
           'UPDATE paper_account SET balance = 500, starting_day_equity = 500 WHERE id = 1',
         )
         .run();
+      this.setSetting('paper_initial_balance', 500);
     }
+    this.ensureSetting('paper_initial_balance', existingPaper ? existingPaper.balance : 500, now);
   }
 
   private ensureSetting<T>(key: string, value: T, now: number): void {
@@ -324,13 +327,39 @@ export class BotDatabase {
       );
   }
 
-  resetPaperAccount(initialBalance = 10_000): void {
+  getPaperInitialBalance(): number {
+    return this.getSetting<number>('paper_initial_balance', 500);
+  }
+
+  getExchangeDayAnchor(
+    mode: TradingMode,
+  ): { dayKey: string; equity: number } | null {
+    return this.getSetting<{ dayKey: string; equity: number } | null>(
+      `exchange_day_anchor_${mode}`,
+      null,
+    );
+  }
+
+  saveExchangeDayAnchor(
+    mode: TradingMode,
+    anchor: { dayKey: string; equity: number },
+  ): void {
+    this.setSetting(`exchange_day_anchor_${mode}`, anchor);
+  }
+
+  getExchangeBaselineWallet(mode: TradingMode): number | null {
+    return this.getSetting<number | null>(`exchange_baseline_wallet_${mode}`, null);
+  }
+
+  saveExchangeBaselineWallet(mode: TradingMode, walletBalance: number): void {
+    this.setSetting(`exchange_baseline_wallet_${mode}`, walletBalance);
+  }
+
+  resetPaperAccount(initialBalance = 500): void {
     const now = Date.now();
-    this.db
-      .prepare(
-        "UPDATE positions SET status = 'CLOSED', close_reason = 'Paper account reset', closed_at = ? WHERE mode = 'PAPER' AND status = 'OPEN'",
-      )
-      .run(now);
+    this.db.prepare("DELETE FROM trades WHERE mode = 'PAPER'").run();
+    this.db.prepare("DELETE FROM positions WHERE mode = 'PAPER'").run();
+    this.setSetting('paper_initial_balance', initialBalance);
     this.db
       .prepare(
         'UPDATE paper_account SET balance = ?, starting_day_equity = ?, day_key = ?, updated_at = ? WHERE id = 1',

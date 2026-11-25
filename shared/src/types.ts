@@ -286,6 +286,7 @@ export interface AccountSummary {
   isolatedMarginUsed: number;
   unrealizedPnl: number;
   totalEquity: number;
+  initialCapitalUsdt?: number;
   startingDayEquity: number;
   dailyPnl: number;
   dailyPnlPct: number;

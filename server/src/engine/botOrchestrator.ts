@@ -76,6 +76,7 @@ export class BotOrchestrator extends EventEmitter {
   private lastScanAt: number | null = null;
   private lastNewsRefreshAt: number | null = null;
   private lastTickAt: number | null = null;
+  private lastExchangeSyncAt = 0;
   private scannerInProgress = false;
   private newsRefreshInProgress = false;
   private tickInProgress = false;
@@ -492,12 +493,30 @@ export class BotOrchestrator extends EventEmitter {
     if (this.tickInProgress) return;
     this.tickInProgress = true;
     try {
+      const now = Date.now();
+      if (
+        this.mode !== 'PAPER' &&
+        this.broker.reconcileStartup &&
+        now - this.lastExchangeSyncAt >= 30_000
+      ) {
+        this.lastExchangeSyncAt = now;
+        const beforeCount = this.db.getOpenPositions(this.mode).length;
+        try {
+          await this.broker.reconcileStartup();
+          const afterCount = this.db.getOpenPositions(this.mode).length;
+          if (afterCount !== beforeCount) {
+            this.emitSnapshotUpdate();
+          }
+        } catch {
+          // Non-fatal exchange sync error; retry next window
+        }
+      }
+
       const openPositions = this.db.getOpenPositions(this.mode);
       const recentNews =
         openPositions.length > 0
           ? this.db.getRecentNews(40, Date.now() - 6 * 3_600_000)
           : [];
-      const now = Date.now();
 
       for (const pos of openPositions) {
         const markPrice = this.marketStream.getMarkPrice(pos.symbol);
@@ -683,6 +702,7 @@ export class BotOrchestrator extends EventEmitter {
     const safeBalance = Math.max(100, Math.min(10_000_000, Number(balance) || 500));
     this.db.resetPaperAccount(safeBalance);
     this.log('INFO', 'Paper', `Paper account reset to ${safeBalance.toFixed(2)} USDT`);
+    this.emitSnapshotUpdate();
     return {
       mode: 'PAPER',
       walletBalance: safeBalance,
@@ -690,6 +710,7 @@ export class BotOrchestrator extends EventEmitter {
       isolatedMarginUsed: 0,
       unrealizedPnl: 0,
       totalEquity: safeBalance,
+      initialCapitalUsdt: safeBalance,
       startingDayEquity: safeBalance,
       dailyPnl: 0,
       dailyPnlPct: 0,

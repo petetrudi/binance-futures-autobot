@@ -41,6 +41,18 @@ export interface BinanceExchangePosition {
   isolatedMargin: number;
 }
 
+export interface BinanceUserTrade {
+  id: string;
+  orderId: string;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  price: number;
+  qty: number;
+  realizedPnl: number;
+  commission: number;
+  time: number;
+}
+
 interface CacheEntry<T> {
   data: T;
   expiresAt: number;
@@ -490,15 +502,22 @@ export class BinanceFuturesClient {
         quantity: params.quantity,
         reduceOnly: params.reduceOnly ? 'true' : undefined,
         newClientOrderId: params.clientOrderId,
+        newOrderRespType: 'RESULT',
       },
     );
+    const executedQty = Number(data.executedQty ?? 0);
+    const cumQuote = Number(data.cumQuote ?? 0);
+    let avgPrice = Number(data.avgPrice ?? 0);
+    if (avgPrice <= 0 && cumQuote > 0 && executedQty > 0) {
+      avgPrice = cumQuote / executedQty;
+    }
     return {
       orderId: String(data.orderId ?? ''),
       clientOrderId: String(data.clientOrderId ?? params.clientOrderId),
       symbol: String(data.symbol ?? params.symbol),
       status: String(data.status ?? 'FILLED'),
-      avgPrice: Number(data.avgPrice ?? 0),
-      executedQty: Number(data.executedQty ?? params.quantity),
+      avgPrice,
+      executedQty: executedQty > 0 ? executedQty : params.quantity,
     };
   }
 
@@ -571,5 +590,32 @@ export class BinanceFuturesClient {
         isolatedMargin: Number(r.isolatedMargin ?? 0),
       }))
       .filter((p) => Math.abs(p.positionAmt) > 0);
+  }
+
+  async getUserTrades(
+    symbol: string,
+    startTime?: number,
+    limit = 25,
+  ): Promise<BinanceUserTrade[]> {
+    const rows = await this.signedRequest<Array<Record<string, unknown>>>(
+      'GET',
+      '/fapi/v1/userTrades',
+      {
+        symbol: symbol.toUpperCase(),
+        startTime,
+        limit,
+      },
+    );
+    return rows.map((r) => ({
+      id: String(r.id ?? ''),
+      orderId: String(r.orderId ?? ''),
+      symbol: String(r.symbol ?? symbol),
+      side: r.side === 'SELL' ? 'SELL' : 'BUY',
+      price: Number(r.price ?? 0),
+      qty: Number(r.qty ?? 0),
+      realizedPnl: Number(r.realizedPnl ?? 0),
+      commission: Number(r.commission ?? 0),
+      time: Number(r.time ?? Date.now()),
+    }));
   }
 }

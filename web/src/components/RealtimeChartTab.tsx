@@ -46,7 +46,10 @@ export function RealtimeChartTab({
   const signal = signals.find((s) => s.symbol === symbol) ?? null;
   const scannerTicker = scanner.find((c) => c.symbol === symbol) ?? null;
 
-  const matchedData = chartData && chartData.symbol === symbol ? chartData : null;
+  const matchedData =
+    chartData && chartData.symbol === symbol && chartData.interval === interval
+      ? chartData
+      : null;
   const tech = matchedData?.technical ?? null;
   const newsCtx = matchedData?.newsContext ?? null;
 

@@ -3,6 +3,8 @@ import {
   AreaSeries,
   ColorType,
   createChart,
+  type IChartApi,
+  type ISeriesApi,
   type UTCTimestamp,
 } from 'lightweight-charts';
 import {
@@ -30,14 +32,23 @@ interface OverviewTabProps {
   onOpenChart: (symbol: string) => void;
 }
 
-type TimeRange = '24H' | '7D' | '30D' | '365D';
+type TimeRange = '7D' | '30D' | '90D' | '180D' | '365D';
 type MetricView = 'ROI' | 'PnL';
 type BottomSubTab = 'positions' | 'history' | 'scanner' | 'news';
 
+const TIME_RANGE_OPTIONS: Array<{ value: TimeRange; label: string; ms: number }> = [
+  { value: '7D', label: '7 Hari', ms: 7 * 24 * 3_600_000 },
+  { value: '30D', label: '30 Hari', ms: 30 * 24 * 3_600_000 },
+  { value: '90D', label: '90 Hari', ms: 90 * 24 * 3_600_000 },
+  { value: '180D', label: '180 Hari', ms: 180 * 24 * 3_600_000 },
+  { value: '365D', label: '365 Hari', ms: 365 * 24 * 3_600_000 },
+];
+
 const TIME_RANGE_MS: Record<TimeRange, number> = {
-  '24H': 24 * 3_600_000,
   '7D': 7 * 24 * 3_600_000,
   '30D': 30 * 24 * 3_600_000,
+  '90D': 90 * 24 * 3_600_000,
+  '180D': 180 * 24 * 3_600_000,
   '365D': 365 * 24 * 3_600_000,
 };
 
@@ -86,47 +97,60 @@ export function OverviewTab({
   const [sortOrder, setSortOrder] = useState<'closingTime' | 'openingTime'>('closingTime');
 
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
+  const equityChartRef = useRef<IChartApi | null>(null);
+  const equitySeriesRef = useRef<ISeriesApi<'Area'> | null>(null);
+  const hasFittedEquityRef = useRef(false);
 
   const initialCapital =
-    snapshot.settings.risk.maxAccountCapitalUsdt &&
-    snapshot.settings.risk.maxAccountCapitalUsdt > 0
-      ? snapshot.settings.risk.maxAccountCapitalUsdt
-      : account.totalEquity > 0
-        ? account.totalEquity - (account.dailyPnl || 0)
+    account.initialCapitalUsdt && account.initialCapitalUsdt > 0
+      ? account.initialCapitalUsdt
+      : snapshot.settings.risk.maxAccountCapitalUsdt &&
+          snapshot.settings.risk.maxAccountCapitalUsdt > 0
+        ? snapshot.settings.risk.maxAccountCapitalUsdt
         : 500;
 
-  // Filter closed positions by selected timeRange
+  // Filter closed & open positions by selected timeRange
+  const cutoffMs = Date.now() - TIME_RANGE_MS[timeRange];
+
   const filteredClosed = useMemo(() => {
-    const cutoff = Date.now() - TIME_RANGE_MS[timeRange];
     const list = closedPositions.filter(
-      (p) => (p.closedAt ?? p.openedAt) >= cutoff,
+      (p) => (p.closedAt ?? p.openedAt) >= cutoffMs,
     );
     return [...list].sort((a, b) =>
       sortOrder === 'closingTime'
         ? (b.closedAt ?? b.openedAt) - (a.closedAt ?? a.openedAt)
         : b.openedAt - a.openedAt,
     );
-  }, [closedPositions, timeRange, sortOrder]);
+  }, [closedPositions, cutoffMs, sortOrder]);
 
-  // Compute genuine performance metrics from closed positions + live equity
+  const filteredOpen = useMemo(
+    () => positions.filter((p) => p.openedAt >= cutoffMs),
+    [positions, cutoffMs],
+  );
+
+  // Strict real accounting metrics (no hardcoded fake fallbacks)
   const metrics = useMemo(() => {
-    const realizedSum = filteredClosed.reduce((s, p) => s + p.realizedPnl, 0);
     const totalCount = filteredClosed.length;
     const wins = filteredClosed.filter((p) => p.realizedPnl > 0);
     const losses = filteredClosed.filter((p) => p.realizedPnl < 0);
     const winCount = wins.length;
 
-    const winRatePct =
-      totalCount > 0 ? (winCount / totalCount) * 100 : account.winRatePct;
+    const winRatePct = totalCount > 0 ? (winCount / totalCount) * 100 : 0;
 
     const grossWin = wins.reduce((s, p) => s + p.realizedPnl, 0);
     const grossLoss = losses.reduce((s, p) => s + Math.abs(p.realizedPnl), 0);
     const profitFactor =
-      grossLoss > 0
-        ? grossWin / grossLoss
-        : grossWin > 0
-          ? 99.0
-          : account.profitFactor;
+      grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? 99.0 : 0;
+
+    // Include open positions' entry fees & partial TP1 realized profit so Realized + Unrealized === Net PnL
+    const dbClosedRealized = filteredClosed.reduce((s, p) => s + p.realizedPnl, 0);
+    const dbOpenRealized = filteredOpen.reduce((s, p) => s + p.realizedPnl, 0);
+
+    // For 365D full account window, derive exact exchange/wallet delta from live balance
+    const realizedSum =
+      timeRange === '365D'
+        ? account.walletBalance - initialCapital
+        : dbClosedRealized + dbOpenRealized;
 
     const netPnl =
       timeRange === '365D'
@@ -137,7 +161,7 @@ export function OverviewTab({
 
     // Chronological cumulative equity for Sharpe & Max Drawdown
     const chrono = [...filteredClosed].sort(
-      (a, b) => (a.closedAt ?? a.openedAt) - (b.closedAt ?? b.openedAt),
+      (a, b) => (a.closedAt ?? a.openedAt) - (b.closedAt ?? a.openedAt),
     );
     let eq = initialCapital;
     let peak = eq;
@@ -153,7 +177,6 @@ export function OverviewTab({
       if (ddPct > maxDdPct) maxDdPct = ddPct;
     }
 
-    // Account for current live unrealized drawdown too
     if (timeRange === '365D') {
       const liveEq = account.totalEquity;
       if (liveEq > peak) peak = liveEq;
@@ -176,16 +199,16 @@ export function OverviewTab({
       roiPct,
       netPnl,
       realizedSum,
-      totalCount: totalCount || account.totalTrades,
+      totalCount,
       winCount,
       winRatePct,
       profitFactor,
       maxDdPct,
       sharpe,
     };
-  }, [filteredClosed, account, initialCapital, timeRange]);
+  }, [filteredClosed, filteredOpen, account, initialCapital, timeRange]);
 
-  // Build real cumulative equity curve for lightweight-charts AreaSeries
+  // Real cumulative equity curve points (strictly ascending unique timestamps)
   const equityCurveData = useMemo(() => {
     const chrono = [...filteredClosed].sort(
       (a, b) => (a.closedAt ?? a.openedAt) - (b.closedAt ?? a.openedAt),
@@ -211,7 +234,6 @@ export function OverviewTab({
       points.push({ time: tSec, roi, pnl: cumulativePnl });
     }
 
-    // Current live point
     const finalTime = nowSec <= lastTime ? lastTime + 1 : nowSec;
     points.push({
       time: finalTime,
@@ -222,20 +244,16 @@ export function OverviewTab({
     return points;
   }, [filteredClosed, initialCapital, metrics.roiPct, metrics.netPnl, timeRange]);
 
+  // Initialize equity AreaSeries chart cleanly once per metricView/timeRange
   useEffect(() => {
     const el = chartContainerRef.current;
-    if (!el || equityCurveData.length === 0) return;
+    if (!el) return;
 
-    const isPositive =
-      (metricView === 'ROI' ? metrics.roiPct : metrics.netPnl) >= 0;
-    const lineColor = isPositive ? '#10B981' : '#F43F5E';
-    const topColor = isPositive
-      ? 'rgba(16, 185, 129, 0.30)'
-      : 'rgba(244, 63, 94, 0.30)';
+    hasFittedEquityRef.current = false;
 
     const chart = createChart(el, {
       width: el.clientWidth,
-      height: 200,
+      height: 205,
       layout: {
         background: { type: ColorType.Solid, color: '#0E1420' },
         textColor: '#94A3B8',
@@ -261,8 +279,8 @@ export function OverviewTab({
     });
 
     const area = chart.addSeries(AreaSeries, {
-      lineColor,
-      topColor,
+      lineColor: '#10B981',
+      topColor: 'rgba(16, 185, 129, 0.30)',
       bottomColor: 'rgba(14, 20, 32, 0.0)',
       lineWidth: 2,
       priceFormat: {
@@ -274,13 +292,8 @@ export function OverviewTab({
       },
     });
 
-    area.setData(
-      equityCurveData.map((pt) => ({
-        time: pt.time as UTCTimestamp,
-        value: metricView === 'ROI' ? pt.roi : pt.pnl,
-      })),
-    );
-    chart.timeScale().fitContent();
+    equityChartRef.current = chart;
+    equitySeriesRef.current = area;
 
     const ro = new ResizeObserver(() => {
       if (el.clientWidth > 0) chart.applyOptions({ width: el.clientWidth });
@@ -290,12 +303,42 @@ export function OverviewTab({
     return () => {
       ro.disconnect();
       chart.remove();
+      equityChartRef.current = null;
+      equitySeriesRef.current = null;
     };
+  }, [metricView, timeRange]);
+
+  // Update equity curve points & color smoothly without destroying chart
+  useEffect(() => {
+    const chart = equityChartRef.current;
+    const area = equitySeriesRef.current;
+    if (!chart || !area || equityCurveData.length === 0) return;
+
+    const isPositive =
+      (metricView === 'ROI' ? metrics.roiPct : metrics.netPnl) >= 0;
+    area.applyOptions({
+      lineColor: isPositive ? '#10B981' : '#F43F5E',
+      topColor: isPositive
+        ? 'rgba(16, 185, 129, 0.30)'
+        : 'rgba(244, 63, 94, 0.30)',
+    });
+
+    area.setData(
+      equityCurveData.map((pt) => ({
+        time: pt.time as UTCTimestamp,
+        value: metricView === 'ROI' ? pt.roi : pt.pnl,
+      })),
+    );
+
+    if (!hasFittedEquityRef.current) {
+      chart.timeScale().fitContent();
+      hasFittedEquityRef.current = true;
+    }
   }, [equityCurveData, metricView, metrics.roiPct, metrics.netPnl]);
 
-  // Real Asset Preferences (from closed + active positions, or honest scanner watchlist preview)
+  // Real Asset Preferences filtered by selected timeRange
   const assetAllocation = useMemo(() => {
-    const combined = [...positions, ...filteredClosed];
+    const combined = [...filteredOpen, ...filteredClosed];
     if (combined.length > 0) {
       const volMap = new Map<string, number>();
       let total = 0;
@@ -325,7 +368,6 @@ export function OverviewTab({
       return { isWatchlistPreview: false, items };
     }
 
-    // Watchlist preview using genuine live Auto-Scanner 24h Spot Volume
     const topScanner = scanner.slice(0, 7);
     const totalVol = topScanner.reduce((s, c) => s + Math.max(c.quoteVolume24h, 1), 0);
     if (topScanner.length === 0 || totalVol <= 0) {
@@ -346,7 +388,7 @@ export function OverviewTab({
         pct: Number(((c.quoteVolume24h / totalVol) * 100).toFixed(2)),
       })),
     };
-  }, [positions, filteredClosed, scanner]);
+  }, [filteredOpen, filteredClosed, scanner]);
 
   const dailyLossUsedPct = Math.min(
     100,
@@ -378,12 +420,13 @@ export function OverviewTab({
                 value={timeRange}
                 onChange={(e) => setTimeRange(e.target.value as TimeRange)}
                 aria-label="Performance Time Range"
-                className="rounded-lg border border-slate-700/80 bg-[#080C14] px-2.5 py-1 text-xs font-semibold text-slate-200 outline-none hover:border-slate-600"
+                className="cursor-pointer rounded-lg border border-slate-700/80 bg-[#080C14] px-2.5 py-1 text-xs font-semibold text-slate-200 outline-none hover:border-slate-500"
               >
-                <option value="24H">24 Hours</option>
-                <option value="7D">7 Days</option>
-                <option value="30D">30 Days</option>
-                <option value="365D">365 Days / All</option>
+                {TIME_RANGE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -412,7 +455,16 @@ export function OverviewTab({
             </div>
 
             {/* Performance Rows (100% Real Data) */}
-            <div className="space-y-2.5 text-xs">
+            <div className="space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="border-b border-dotted border-slate-700 text-slate-400">
+                  Copier PnL
+                </span>
+                <span className="font-mono-num font-semibold text-slate-400">
+                  $0.00 USDT <span className="text-[10px]">(0 Copiers)</span>
+                </span>
+              </div>
+
               <div className="flex items-center justify-between">
                 <span className="border-b border-dotted border-slate-700 text-slate-400">
                   Realized PnL
@@ -517,18 +569,19 @@ export function OverviewTab({
               value={timeRange}
               onChange={(e) => setTimeRange(e.target.value as TimeRange)}
               aria-label="Chart Time Range"
-              className="rounded-lg border border-slate-700/80 bg-[#080C14] px-2.5 py-1 text-xs font-semibold text-slate-200 outline-none hover:border-slate-600"
+              className="cursor-pointer rounded-lg border border-slate-700/80 bg-[#080C14] px-2.5 py-1 text-xs font-semibold text-slate-200 outline-none hover:border-slate-500"
             >
-              <option value="24H">24 Hours</option>
-              <option value="7D">7 Days</option>
-              <option value="30D">30 Days</option>
-              <option value="365D">365 Days / All</option>
+              {TIME_RANGE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
             </select>
           </div>
 
           <div
             ref={chartContainerRef}
-            className="h-[200px] w-full overflow-hidden rounded-lg border border-slate-800/70 bg-[#0E1420]"
+            className="h-[205px] w-full overflow-hidden rounded-lg border border-slate-800/70 bg-[#0E1420]"
           />
         </div>
       </div>
@@ -638,19 +691,34 @@ export function OverviewTab({
                 </span>
               </div>
 
-              <button
-                type="button"
-                onClick={onScanNow}
-                disabled={busyAction === 'scan' || snapshot.status.scannerInProgress}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/20 disabled:opacity-50"
-              >
-                <RefreshCw
-                  className={`h-3 w-3 ${
-                    snapshot.status.scannerInProgress ? 'animate-spin' : ''
-                  }`}
-                />
-                Scan Market
-              </button>
+              <div className="flex items-center gap-2">
+                <select
+                  value={timeRange}
+                  onChange={(e) => setTimeRange(e.target.value as TimeRange)}
+                  aria-label="Asset Allocation Time Range"
+                  className="cursor-pointer rounded-lg border border-slate-700/80 bg-[#080C14] px-2.5 py-1 text-xs font-semibold text-slate-200 outline-none hover:border-slate-500"
+                >
+                  {TIME_RANGE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  type="button"
+                  onClick={onScanNow}
+                  disabled={busyAction === 'scan' || snapshot.status.scannerInProgress}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/20 disabled:opacity-50"
+                >
+                  <RefreshCw
+                    className={`h-3 w-3 ${
+                      snapshot.status.scannerInProgress ? 'animate-spin' : ''
+                    }`}
+                  />
+                  Scan Market
+                </button>
+              </div>
             </div>
 
             <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-center">
@@ -960,7 +1028,7 @@ export function OverviewTab({
             {filteredClosed.length === 0 ? (
               <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-800 py-10 text-center">
                 <p className="text-xs text-slate-400">
-                  Belum ada posisi tertutup pada rentang waktu ini ({timeRange}).
+                  Belum ada posisi tertutup pada rentang waktu {timeRange.replace('D', ' Hari')}.
                 </p>
                 <button
                   type="button"

@@ -98,6 +98,7 @@ export class PaperBroker implements ExecutionBroker {
       isolatedMarginUsed,
       unrealizedPnl,
       totalEquity,
+      initialCapitalUsdt: this.db.getPaperInitialBalance(),
       startingDayEquity,
       dailyPnl,
       dailyPnlPct,
@@ -342,8 +343,6 @@ export class PaperBroker implements ExecutionBroker {
  * Live / Testnet signed Binance USD-M Futures execution broker with server-side SL/TP orders.
  */
 export class BinanceFuturesBroker implements ExecutionBroker {
-  private dayEquityAnchor: { dayKey: string; equity: number } | null = null;
-
   constructor(
     public readonly mode: 'TESTNET' | 'LIVE',
     private readonly db: BotDatabase,
@@ -371,19 +370,35 @@ export class BinanceFuturesBroker implements ExecutionBroker {
       0,
     );
 
-    if (this.mode === 'TESTNET' && cap > 0) {
-      // Scale down Testnet faucet balance (Binance default $10,000) to user's targeted lead copy trader capital (e.g. $500)
-      walletBalance = cap + stats.netPnl;
-      unrealizedPnl = openPositions.reduce((s, p) => s + p.unrealizedPnl, 0);
+    let initialCapitalUsdt: number;
+    let baseline = this.db.getExchangeBaselineWallet(this.mode);
+    if (baseline === null) {
+      baseline = info.totalWalletBalance - stats.netPnl;
+      this.db.saveExchangeBaselineWallet(this.mode, baseline);
+    }
+
+    if (this.mode === 'TESTNET' && cap > 0 && info.totalWalletBalance > cap * 1.5) {
+      // Scale Testnet faucet balance cleanly while tracking 100% real exchange wallet delta (fees, funding, fills)
+      const realExchangeDelta = info.totalWalletBalance - baseline;
+      walletBalance = cap + realExchangeDelta;
+      unrealizedPnl = info.totalUnrealizedProfit;
       totalEquity = walletBalance + unrealizedPnl;
-      availableBalance = Math.max(0, walletBalance - isolatedMarginUsed);
+      availableBalance = Math.max(
+        0,
+        Math.min(info.availableBalance, walletBalance - isolatedMarginUsed),
+      );
+      initialCapitalUsdt = cap;
+    } else {
+      initialCapitalUsdt = cap > 0 ? Math.min(baseline, cap) : baseline;
     }
 
     const today = utcDayKey();
-    if (!this.dayEquityAnchor || this.dayEquityAnchor.dayKey !== today) {
-      this.dayEquityAnchor = { dayKey: today, equity: totalEquity };
+    let anchor = this.db.getExchangeDayAnchor(this.mode);
+    if (!anchor || anchor.dayKey !== today) {
+      anchor = { dayKey: today, equity: totalEquity };
+      this.db.saveExchangeDayAnchor(this.mode, anchor);
     }
-    const startingDayEquity = this.dayEquityAnchor.equity;
+    const startingDayEquity = anchor.equity;
     const dailyPnl = totalEquity - startingDayEquity;
     const dailyPnlPct =
       startingDayEquity > 0 ? (dailyPnl / startingDayEquity) * 100 : 0;
@@ -395,6 +410,7 @@ export class BinanceFuturesBroker implements ExecutionBroker {
       isolatedMarginUsed,
       unrealizedPnl,
       totalEquity,
+      initialCapitalUsdt,
       startingDayEquity,
       dailyPnl,
       dailyPnlPct,
@@ -715,17 +731,83 @@ export class BinanceFuturesBroker implements ExecutionBroker {
     const exchangeBySymbol = new Map(exchangeOpen.map((p) => [p.symbol, p]));
     const dbOpen = this.db.getOpenPositions(this.mode);
 
-    // Close DB positions that are no longer open on Binance
+    // Sync real Binance fields for open positions & close positions already closed on Binance
     for (const pos of dbOpen) {
-      if (!exchangeBySymbol.has(pos.symbol)) {
+      const ex = exchangeBySymbol.get(pos.symbol);
+      if (ex) {
+        const absAmt = Math.abs(ex.positionAmt);
+        this.db.upsertPosition({
+          ...pos,
+          entryPrice: ex.entryPrice > 0 ? ex.entryPrice : pos.entryPrice,
+          markPrice: ex.markPrice > 0 ? ex.markPrice : pos.markPrice,
+          remainingQuantity: absAmt > 0 ? absAmt : pos.remainingQuantity,
+          isolatedMargin:
+            ex.isolatedMargin > 0 ? ex.isolatedMargin : pos.isolatedMargin,
+          liquidationPrice:
+            ex.liquidationPrice > 0 ? ex.liquidationPrice : pos.liquidationPrice,
+          unrealizedPnl: ex.unRealizedProfit,
+          leverage: ex.leverage > 0 ? ex.leverage : pos.leverage,
+        });
+      } else {
+        // Closed on exchange (via manual close or server-side SL/TP); reconcile exact fills
+        let exitPrice = pos.markPrice;
+        let closeFee = 0;
+        let closePnl = 0;
+        let closeTs = Date.now();
+        try {
+          const userTrades = await this.client.getUserTrades(
+            pos.symbol,
+            Math.max(0, pos.openedAt - 5000),
+            20,
+          );
+          const closeSide = pos.side === 'LONG' ? 'SELL' : 'BUY';
+          const closingFills = userTrades.filter(
+            (ut) => ut.side === closeSide && ut.time >= pos.openedAt,
+          );
+          if (closingFills.length > 0) {
+            const totalQty = closingFills.reduce((s, f) => s + f.qty, 0);
+            if (totalQty > 0) {
+              exitPrice =
+                closingFills.reduce((s, f) => s + f.price * f.qty, 0) / totalQty;
+            }
+            closeFee = closingFills.reduce((s, f) => s + f.commission, 0);
+            closePnl =
+              closingFills.reduce((s, f) => s + f.realizedPnl, 0) - closeFee;
+            closeTs = closingFills.at(-1)?.time ?? closeTs;
+          }
+        } catch {
+          // Fallback to markPrice if userTrades query fails
+        }
+
+        const totalRealized =
+          closePnl !== 0 ? pos.realizedPnl + closePnl : pos.realizedPnl;
         this.db.upsertPosition({
           ...pos,
           status: 'CLOSED',
+          markPrice: exitPrice,
           remainingQuantity: 0,
           isolatedMargin: 0,
           unrealizedPnl: 0,
+          realizedPnl: totalRealized,
+          feesPaid: pos.feesPaid + closeFee,
           closeReason: 'Reconciled closed on exchange',
-          closedAt: Date.now(),
+          closedAt: closeTs,
+        });
+        this.db.insertTrade({
+          id: randomUUID(),
+          positionId: pos.id,
+          mode: this.mode,
+          symbol: pos.symbol,
+          side: pos.side,
+          action: 'CLOSE_MANUAL',
+          price: exitPrice,
+          quantity: pos.remainingQuantity,
+          notional: exitPrice * pos.remainingQuantity,
+          fee: closeFee,
+          realizedPnl: closePnl,
+          reason: 'Reconciled closed on Binance exchange',
+          exchangeOrderId: null,
+          createdAt: closeTs,
         });
       }
     }
@@ -753,7 +835,7 @@ export class BinanceFuturesBroker implements ExecutionBroker {
         markPrice: ex.markPrice,
         quantity: qty,
         remainingQuantity: qty,
-        leverage: ex.leverage || 3,
+        leverage: ex.leverage || 2,
         isolatedMargin: ex.isolatedMargin,
         stopLoss: fallbackSl,
         takeProfit1: fallbackTp1,
@@ -767,7 +849,7 @@ export class BinanceFuturesBroker implements ExecutionBroker {
         realizedPnl: 0,
         feesPaid: 0,
         confidence: 70,
-        entryReasons: ['Imported via exchange reconciliation'],
+        entryReasons: ['Synced from Binance exchange'],
         closeReason: null,
         slOrderId: null,
         tpOrderId: null,
