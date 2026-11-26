@@ -255,9 +255,17 @@ export function CandlestickChart({
           price: activePosition.takeProfit2,
           color: '#34D399',
           lineWidth: 1,
-          lineStyle: 0,
+          lineStyle: 2,
           axisLabelVisible: true,
           title: 'TP2',
+        }),
+        candleSeries.createPriceLine({
+          price: activePosition.takeProfit3 ?? activePosition.takeProfit2,
+          color: '#6EE7B7',
+          lineWidth: 1,
+          lineStyle: 0,
+          axisLabelVisible: true,
+          title: 'TP3',
         }),
       );
     }
@@ -269,6 +277,7 @@ export function CandlestickChart({
     activePosition?.stopLoss,
     activePosition?.takeProfit1,
     activePosition?.takeProfit2,
+    activePosition?.takeProfit3,
     activePosition?.trailingActive,
   ]);
 

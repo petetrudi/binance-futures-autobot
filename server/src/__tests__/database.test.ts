@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_RISK_CONFIG,
@@ -37,9 +41,11 @@ describe('BotDatabase (node:sqlite)', () => {
       leverage: 3,
       isolatedMargin: 1000,
       stopLoss: 59000,
-      takeProfit1: 61500,
-      takeProfit2: 62800,
+      takeProfit1: 61000,
+      takeProfit2: 61800,
+      takeProfit3: 63000,
       tp1Hit: false,
+      tp2Hit: false,
       trailingActive: false,
       peakPrice: 60000,
       entryAtr: 400,
@@ -65,10 +71,13 @@ describe('BotDatabase (node:sqlite)', () => {
       remainingQuantity: 0,
       realizedPnl: 140,
       tp1Hit: true,
-      closeReason: 'TP2 reached',
+      tp2Hit: true,
+      closeReason: 'TP3 reached',
       closedAt: now + 5000,
     });
     expect(db.getOpenPositions('PAPER')).toHaveLength(0);
+    expect(db.getClosedPositions('PAPER')[0]?.takeProfit3).toBe(63000);
+    expect(db.getClosedPositions('PAPER')[0]?.tp2Hit).toBe(true);
 
     const trade: TradeRecord = {
       id: 't-1',
@@ -76,13 +85,13 @@ describe('BotDatabase (node:sqlite)', () => {
       mode: 'PAPER',
       symbol: 'BTCUSDT',
       side: 'LONG',
-      action: 'CLOSE_TP2',
-      price: 62800,
+      action: 'CLOSE_TP3',
+      price: 63000,
       quantity: 0.05,
-      notional: 3140,
+      notional: 3150,
       fee: 1.57,
       realizedPnl: 140,
-      reason: 'TP2 reached',
+      reason: 'TP3 reached',
       exchangeOrderId: null,
       createdAt: now + 5000,
     };
@@ -130,9 +139,10 @@ describe('BotDatabase (node:sqlite)', () => {
       confidence: 80,
       entryPrice: 2200,
       stopLoss: 2150,
-      takeProfit1: 2275,
-      takeProfit2: 2340,
-      riskRewardRatio: 2.8,
+      takeProfit1: 2250,
+      takeProfit2: 2290,
+      takeProfit3: 2350,
+      riskRewardRatio: 3.0,
       atr: 25,
       executed: true,
       emergencyCloseRequired: false,
@@ -146,5 +156,75 @@ describe('BotDatabase (node:sqlite)', () => {
     db.addLog('INFO', 'Test', 'Booted ok', { ok: true });
     expect(db.getRecentLogs(10)[0]?.message).toBe('Booted ok');
     db.close();
+  });
+
+  it('migrates legacy 2-TP sqlite database schema and strategy_config to 3-TP Option B safely', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-db-mig-'));
+    const dbPath = path.join(tmpDir, 'legacy.sqlite');
+    const raw = new DatabaseSync(dbPath);
+    const now = Date.now();
+    raw.exec(`
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE TABLE paper_account (id INTEGER PRIMARY KEY CHECK (id = 1), balance REAL NOT NULL, starting_day_equity REAL NOT NULL, day_key TEXT NOT NULL, updated_at INTEGER NOT NULL);
+      CREATE TABLE positions (
+        id TEXT PRIMARY KEY, mode TEXT NOT NULL, symbol TEXT NOT NULL, side TEXT NOT NULL, status TEXT NOT NULL,
+        entry_price REAL NOT NULL, mark_price REAL NOT NULL, quantity REAL NOT NULL, remaining_quantity REAL NOT NULL,
+        leverage INTEGER NOT NULL, isolated_margin REAL NOT NULL, stop_loss REAL NOT NULL,
+        take_profit_1 REAL NOT NULL, take_profit_2 REAL NOT NULL, tp1_hit INTEGER NOT NULL DEFAULT 0,
+        trailing_active INTEGER NOT NULL DEFAULT 0, peak_price REAL NOT NULL, entry_atr REAL NOT NULL,
+        liquidation_price REAL NOT NULL, unrealized_pnl REAL NOT NULL DEFAULT 0, realized_pnl REAL NOT NULL DEFAULT 0,
+        fees_paid REAL NOT NULL DEFAULT 0, confidence REAL NOT NULL, entry_reasons_json TEXT NOT NULL,
+        close_reason TEXT, sl_order_id TEXT, tp_order_id TEXT, opened_at INTEGER NOT NULL, closed_at INTEGER
+      );
+      CREATE TABLE signals (
+        id TEXT PRIMARY KEY, symbol TEXT NOT NULL, action TEXT NOT NULL, regime TEXT NOT NULL,
+        technical_score REAL NOT NULL, news_score REAL NOT NULL, composite_score REAL NOT NULL,
+        confidence REAL NOT NULL, entry_price REAL NOT NULL, stop_loss REAL NOT NULL,
+        take_profit_1 REAL NOT NULL, take_profit_2 REAL NOT NULL, risk_reward REAL NOT NULL,
+        executed INTEGER NOT NULL DEFAULT 0, reasons_json TEXT NOT NULL, veto_reasons_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+    `);
+    raw
+      .prepare('INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)')
+      .run(
+        'strategy_config',
+        JSON.stringify({ tp1RiskReward: 1.5, tp2RiskReward: 2.8, minConfidence: 72 }),
+        now,
+      );
+    raw
+      .prepare(
+        `INSERT INTO positions (
+          id, mode, symbol, side, status, entry_price, mark_price, quantity, remaining_quantity,
+          leverage, isolated_margin, stop_loss, take_profit_1, take_profit_2, tp1_hit,
+          trailing_active, peak_price, entry_atr, liquidation_price, unrealized_pnl, realized_pnl,
+          fees_paid, confidence, entry_reasons_json, close_reason, sl_order_id, tp_order_id, opened_at, closed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        'legacy-1', 'TESTNET', 'SOLUSDT', 'SHORT', 'CLOSED', 75, 70, 2, 0,
+        3, 0, 77, 72, 69.4, 1, 0, 70, 1.2, 99, 0, 3.5, 0.2, 80, '["legacy"]', 'Closed',
+        null, null, now - 5000, now,
+      );
+    raw.close();
+
+    let migrated: BotDatabase | null = null;
+    try {
+      migrated = new BotDatabase(dbPath);
+      const strat = migrated.getStrategyConfig();
+      expect(strat.tp1RiskReward).toBe(1.0);
+      expect(strat.tp2RiskReward).toBe(1.8);
+      expect(strat.tp3RiskReward).toBe(3.0);
+      expect(strat.tp1ClosePct).toBe(50);
+      expect(strat.tp2ClosePct).toBe(30);
+
+      const closed = migrated.getClosedPositions('TESTNET');
+      expect(closed).toHaveLength(1);
+      expect(closed[0]?.takeProfit3).toBe(69.4);
+      expect(closed[0]?.tp2Hit).toBe(false);
+    } finally {
+      migrated?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    }
   });
 });

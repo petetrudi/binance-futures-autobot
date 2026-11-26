@@ -39,6 +39,17 @@ export function SettingsAndHistoryTab({
   );
   const [maxDailyLossPct, setMaxDailyLossPct] = useState(settings.risk.maxDailyLossPct);
   const [minConfidence, setMinConfidence] = useState(settings.strategy.minConfidence);
+  const [tp1RiskReward, setTp1RiskReward] = useState(settings.strategy.tp1RiskReward);
+  const [tp2RiskReward, setTp2RiskReward] = useState(settings.strategy.tp2RiskReward);
+  const [tp3RiskReward, setTp3RiskReward] = useState(
+    settings.strategy.tp3RiskReward ?? 3.0,
+  );
+  const [tp1ClosePct, setTp1ClosePct] = useState(
+    settings.strategy.tp1ClosePct ?? 50,
+  );
+  const [tp2ClosePct, setTp2ClosePct] = useState(
+    settings.strategy.tp2ClosePct ?? 30,
+  );
   const [minVolumeM, setMinVolumeM] = useState(
     Math.round(settings.strategy.minVolume24hUsdt / 1_000_000),
   );
@@ -66,6 +77,11 @@ export function SettingsAndHistoryTab({
     setMaxConcurrentPositions(settings.risk.maxConcurrentPositions);
     setMaxDailyLossPct(settings.risk.maxDailyLossPct);
     setMinConfidence(settings.strategy.minConfidence);
+    setTp1RiskReward(settings.strategy.tp1RiskReward);
+    setTp2RiskReward(settings.strategy.tp2RiskReward);
+    setTp3RiskReward(settings.strategy.tp3RiskReward ?? 3.0);
+    setTp1ClosePct(settings.strategy.tp1ClosePct ?? 50);
+    setTp2ClosePct(settings.strategy.tp2ClosePct ?? 30);
     setMinVolumeM(Math.round(settings.strategy.minVolume24hUsdt / 1_000_000));
     setScanIntervalSec(settings.strategy.scanIntervalSeconds);
     setEnableAutoTrading(settings.strategy.enableAutoTrading);
@@ -93,6 +109,11 @@ export function SettingsAndHistoryTab({
       },
       strategy: {
         minConfidence,
+        tp1RiskReward,
+        tp2RiskReward,
+        tp3RiskReward,
+        tp1ClosePct,
+        tp2ClosePct,
         minVolume24hUsdt: minVolumeM * 1_000_000,
         scanIntervalSeconds: scanIntervalSec,
         enableAutoTrading,
@@ -263,8 +284,73 @@ export function SettingsAndHistoryTab({
                 />
               </label>
 
-              <div className="col-span-2 flex items-end">
-                <label className="flex h-[30px] w-full cursor-pointer items-center gap-2 rounded border border-slate-700/80 bg-[#0E1420] px-2.5 text-xs text-slate-200">
+              <label className="flex flex-col text-[11px] text-slate-400">
+                TP1 Target (R)
+                <input
+                  type="number"
+                  min={0.4}
+                  max={5}
+                  step={0.1}
+                  value={tp1RiskReward}
+                  onChange={(e) => setTp1RiskReward(Number(e.target.value))}
+                  className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
+                />
+              </label>
+
+              <label className="flex flex-col text-[11px] text-slate-400">
+                TP2 Target (R)
+                <input
+                  type="number"
+                  min={0.8}
+                  max={8}
+                  step={0.1}
+                  value={tp2RiskReward}
+                  onChange={(e) => setTp2RiskReward(Number(e.target.value))}
+                  className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
+                />
+              </label>
+
+              <label className="flex flex-col text-[11px] text-slate-400">
+                TP3 Target (R)
+                <input
+                  type="number"
+                  min={1.2}
+                  max={12}
+                  step={0.1}
+                  value={tp3RiskReward}
+                  onChange={(e) => setTp3RiskReward(Number(e.target.value))}
+                  className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
+                />
+              </label>
+
+              <label className="flex flex-col text-[11px] text-slate-400">
+                TP1 / TP2 Close (%)
+                <div className="mt-1 flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    min={10}
+                    max={80}
+                    step={5}
+                    value={tp1ClosePct}
+                    onChange={(e) => setTp1ClosePct(Number(e.target.value))}
+                    title="TP1 Close %"
+                    className="font-mono-num h-[30px] w-1/2 rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
+                  />
+                  <input
+                    type="number"
+                    min={10}
+                    max={80}
+                    step={5}
+                    value={tp2ClosePct}
+                    onChange={(e) => setTp2ClosePct(Number(e.target.value))}
+                    title="TP2 Close %"
+                    className="font-mono-num h-[30px] w-1/2 rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
+                  />
+                </div>
+              </label>
+
+              <div className="col-span-2 flex items-end justify-between gap-2 sm:col-span-3 lg:col-span-4">
+                <label className="flex h-[30px] cursor-pointer items-center gap-2 rounded border border-slate-700/80 bg-[#0E1420] px-3 text-xs text-slate-200">
                   <input
                     type="checkbox"
                     checked={enableAutoTrading}
@@ -273,6 +359,10 @@ export function SettingsAndHistoryTab({
                   />
                   Auto-Open Enabled
                 </label>
+                <span className="font-mono-num text-[11px] text-slate-400">
+                  Split: TP1 {tp1ClosePct}% (SL→BE) · TP2 {tp2ClosePct}% (SL→TP1+Trail) · TP3{' '}
+                  {Math.max(0, 100 - tp1ClosePct - tp2ClosePct)}%
+                </span>
               </div>
             </div>
 

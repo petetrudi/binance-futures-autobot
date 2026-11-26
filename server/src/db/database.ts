@@ -82,7 +82,9 @@ export class BotDatabase {
         stop_loss REAL NOT NULL,
         take_profit_1 REAL NOT NULL,
         take_profit_2 REAL NOT NULL,
+        take_profit_3 REAL NOT NULL DEFAULT 0,
         tp1_hit INTEGER NOT NULL DEFAULT 0,
+        tp2_hit INTEGER NOT NULL DEFAULT 0,
         trailing_active INTEGER NOT NULL DEFAULT 0,
         peak_price REAL NOT NULL,
         entry_atr REAL NOT NULL,
@@ -133,6 +135,7 @@ export class BotDatabase {
         stop_loss REAL NOT NULL,
         take_profit_1 REAL NOT NULL,
         take_profit_2 REAL NOT NULL,
+        take_profit_3 REAL NOT NULL DEFAULT 0,
         risk_reward REAL NOT NULL,
         executed INTEGER NOT NULL DEFAULT 0,
         reasons_json TEXT NOT NULL,
@@ -170,6 +173,28 @@ export class BotDatabase {
         created_at INTEGER NOT NULL
       );
     `);
+
+    this.migrateColumns();
+  }
+
+  private migrateColumns(): void {
+    const ensureColumn = (table: string, col: string, definition: string) => {
+      const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === col)) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${definition}`);
+      }
+    };
+
+    ensureColumn('positions', 'take_profit_3', 'REAL NOT NULL DEFAULT 0');
+    ensureColumn('positions', 'tp2_hit', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumn('signals', 'take_profit_3', 'REAL NOT NULL DEFAULT 0');
+
+    this.db.exec(
+      'UPDATE positions SET take_profit_3 = take_profit_2 WHERE take_profit_3 = 0 AND take_profit_2 > 0',
+    );
+    this.db.exec(
+      'UPDATE signals SET take_profit_3 = take_profit_2 WHERE take_profit_3 = 0 AND take_profit_2 > 0',
+    );
   }
 
   private seedDefaults(): void {
@@ -198,11 +223,32 @@ export class BotDatabase {
     }
 
     const currentStrat = this.getSetting<Partial<StrategyConfig>>('strategy_config', {});
-    if (currentStrat.minConfidence === undefined || currentStrat.minConfidence < 70) {
+    if (
+      currentStrat.minConfidence === undefined ||
+      currentStrat.minConfidence < 70 ||
+      currentStrat.tp3RiskReward === undefined ||
+      currentStrat.tp1ClosePct === undefined ||
+      currentStrat.tp2ClosePct === undefined
+    ) {
       this.saveStrategyConfig({
         ...DEFAULT_STRATEGY_CONFIG,
         ...currentStrat,
-        minConfidence: 72,
+        minConfidence:
+          currentStrat.minConfidence === undefined || currentStrat.minConfidence < 70
+            ? 72
+            : currentStrat.minConfidence,
+        tp1RiskReward:
+          currentStrat.tp1RiskReward === undefined || currentStrat.tp1RiskReward === 1.5
+            ? DEFAULT_STRATEGY_CONFIG.tp1RiskReward
+            : currentStrat.tp1RiskReward,
+        tp2RiskReward:
+          currentStrat.tp2RiskReward === undefined || currentStrat.tp2RiskReward === 2.8
+            ? DEFAULT_STRATEGY_CONFIG.tp2RiskReward
+            : currentStrat.tp2RiskReward,
+        tp3RiskReward:
+          currentStrat.tp3RiskReward ?? DEFAULT_STRATEGY_CONFIG.tp3RiskReward,
+        tp1ClosePct: currentStrat.tp1ClosePct ?? DEFAULT_STRATEGY_CONFIG.tp1ClosePct,
+        tp2ClosePct: currentStrat.tp2ClosePct ?? DEFAULT_STRATEGY_CONFIG.tp2ClosePct,
       });
     }
 
@@ -383,7 +429,9 @@ export class BotDatabase {
       stopLoss: Number(row.stop_loss),
       takeProfit1: Number(row.take_profit_1),
       takeProfit2: Number(row.take_profit_2),
+      takeProfit3: Number(row.take_profit_3) || Number(row.take_profit_2),
       tp1Hit: Number(row.tp1_hit) === 1,
+      tp2Hit: Number(row.tp2_hit) === 1,
       trailingActive: Number(row.trailing_active) === 1,
       peakPrice: Number(row.peak_price),
       entryAtr: Number(row.entry_atr),
@@ -409,11 +457,11 @@ export class BotDatabase {
       .prepare(
         `INSERT INTO positions (
           id, mode, symbol, side, status, entry_price, mark_price, quantity, remaining_quantity,
-          leverage, isolated_margin, stop_loss, take_profit_1, take_profit_2, tp1_hit,
-          trailing_active, peak_price, entry_atr, liquidation_price, unrealized_pnl,
+          leverage, isolated_margin, stop_loss, take_profit_1, take_profit_2, take_profit_3,
+          tp1_hit, tp2_hit, trailing_active, peak_price, entry_atr, liquidation_price, unrealized_pnl,
           realized_pnl, fees_paid, confidence, entry_reasons_json, close_reason,
           sl_order_id, tp_order_id, opened_at, closed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           status = excluded.status,
           mark_price = excluded.mark_price,
@@ -421,6 +469,7 @@ export class BotDatabase {
           isolated_margin = excluded.isolated_margin,
           stop_loss = excluded.stop_loss,
           tp1_hit = excluded.tp1_hit,
+          tp2_hit = excluded.tp2_hit,
           trailing_active = excluded.trailing_active,
           peak_price = excluded.peak_price,
           unrealized_pnl = excluded.unrealized_pnl,
@@ -446,7 +495,9 @@ export class BotDatabase {
         pos.stopLoss,
         pos.takeProfit1,
         pos.takeProfit2,
+        pos.takeProfit3,
         pos.tp1Hit ? 1 : 0,
+        pos.tp2Hit ? 1 : 0,
         pos.trailingActive ? 1 : 0,
         pos.peakPrice,
         pos.entryAtr,
@@ -599,9 +650,9 @@ export class BotDatabase {
       .prepare(
         `INSERT INTO signals (
           id, symbol, action, regime, technical_score, news_score, composite_score,
-          confidence, entry_price, stop_loss, take_profit_1, take_profit_2,
+          confidence, entry_price, stop_loss, take_profit_1, take_profit_2, take_profit_3,
           risk_reward, executed, reasons_json, veto_reasons_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         signal.id,
@@ -616,6 +667,7 @@ export class BotDatabase {
         signal.stopLoss,
         signal.takeProfit1,
         signal.takeProfit2,
+        signal.takeProfit3,
         signal.riskRewardRatio,
         signal.executed ? 1 : 0,
         JSON.stringify(signal.reasons ?? []),
@@ -641,6 +693,7 @@ export class BotDatabase {
       stopLoss: Number(r.stop_loss),
       takeProfit1: Number(r.take_profit_1),
       takeProfit2: Number(r.take_profit_2),
+      takeProfit3: Number(r.take_profit_3) || Number(r.take_profit_2),
       riskRewardRatio: Number(r.risk_reward),
       atr: 0,
       executed: Number(r.executed) === 1,

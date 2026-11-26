@@ -239,7 +239,8 @@ export function RealtimeChartTab({
               </span>
               <span className="text-emerald-400">
                 TP1 ${fmtPrice(activePosition.takeProfit1)} · TP2 $
-                {fmtPrice(activePosition.takeProfit2)}
+                {fmtPrice(activePosition.takeProfit2)} · TP3 $
+                {fmtPrice(activePosition.takeProfit3 ?? activePosition.takeProfit2)}
               </span>
               <span className="text-amber-300">
                 Liq ${fmtPrice(activePosition.liquidationPrice)}

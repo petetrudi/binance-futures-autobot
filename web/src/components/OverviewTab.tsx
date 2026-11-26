@@ -929,6 +929,11 @@ export function OverviewTab({
                             TP1 HIT
                           </span>
                         )}
+                        {pos.tp2Hit && (
+                          <span className="rounded bg-emerald-500/25 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-200">
+                            TP2 HIT
+                          </span>
+                        )}
                         {pos.trailingActive && (
                           <span className="rounded bg-cyan-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-300">
                             TRAILING
@@ -984,9 +989,12 @@ export function OverviewTab({
                         <div className="font-mono-num mt-0.5 text-rose-400">
                           ${fmtPrice(pos.stopLoss)}
                         </div>
-                        <div className="mt-1.5 text-[11px] text-slate-400">Take Profit</div>
+                        <div className="mt-1.5 text-[11px] text-slate-400">
+                          Take Profit (1 / 2 / 3)
+                        </div>
                         <div className="font-mono-num text-emerald-400">
-                          ${fmtPrice(pos.takeProfit1)} / ${fmtPrice(pos.takeProfit2)}
+                          ${fmtPrice(pos.takeProfit1)} / ${fmtPrice(pos.takeProfit2)} / $
+                          {fmtPrice(pos.takeProfit3 ?? pos.takeProfit2)}
                         </div>
                       </div>
 

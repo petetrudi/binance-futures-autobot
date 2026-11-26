@@ -18,7 +18,12 @@ describe('Multi-timeframe technical analyzer', () => {
     expect(analysis.suggestedLongPlan.stopLoss).toBeLessThan(analysis.suggestedLongPlan.entryPrice);
     expect(analysis.suggestedLongPlan.takeProfit1).toBeGreaterThan(analysis.suggestedLongPlan.entryPrice);
     expect(analysis.suggestedLongPlan.takeProfit2).toBeGreaterThan(analysis.suggestedLongPlan.takeProfit1);
-    expect(analysis.suggestedLongPlan.riskRewardRatio).toBeGreaterThan(1.5);
+    expect(analysis.suggestedLongPlan.takeProfit3).toBeGreaterThan(analysis.suggestedLongPlan.takeProfit2);
+    const longRisk = analysis.suggestedLongPlan.entryPrice - analysis.suggestedLongPlan.stopLoss;
+    expect(analysis.suggestedLongPlan.takeProfit1 - analysis.suggestedLongPlan.entryPrice).toBeCloseTo(longRisk * 1.0, 4);
+    expect(analysis.suggestedLongPlan.takeProfit2 - analysis.suggestedLongPlan.entryPrice).toBeCloseTo(longRisk * 1.8, 4);
+    expect(analysis.suggestedLongPlan.takeProfit3 - analysis.suggestedLongPlan.entryPrice).toBeCloseTo(longRisk * 3.0, 4);
+    expect(analysis.suggestedLongPlan.riskRewardRatio).toBeCloseTo(3.0, 2);
     expect(analysis.reasons.length).toBeGreaterThan(0);
   });
 
@@ -34,7 +39,9 @@ describe('Multi-timeframe technical analyzer', () => {
     expect(analysis.regime).toBe('STRONG_TREND_DOWN');
     expect(analysis.technicalScore).toBeLessThan(-40);
     expect(analysis.suggestedShortPlan.stopLoss).toBeGreaterThan(analysis.suggestedShortPlan.entryPrice);
+    expect(analysis.suggestedShortPlan.takeProfit1).toBeLessThan(analysis.suggestedShortPlan.entryPrice);
     expect(analysis.suggestedShortPlan.takeProfit2).toBeLessThan(analysis.suggestedShortPlan.takeProfit1);
+    expect(analysis.suggestedShortPlan.takeProfit3).toBeLessThan(analysis.suggestedShortPlan.takeProfit2);
   });
 
   it('identifies ranging market on choppy sideways candles', () => {

@@ -108,6 +108,7 @@ function buildTradePlan(
   const sign = side === 'LONG' ? 1 : -1;
   const takeProfit1 = price + sign * riskDist * config.tp1RiskReward;
   const takeProfit2 = price + sign * riskDist * config.tp2RiskReward;
+  const takeProfit3 = price + sign * riskDist * config.tp3RiskReward;
 
   return {
     side,
@@ -115,7 +116,8 @@ function buildTradePlan(
     stopLoss,
     takeProfit1,
     takeProfit2,
-    riskRewardRatio: config.tp2RiskReward,
+    takeProfit3,
+    riskRewardRatio: config.tp3RiskReward,
     stopDistancePct: riskDist / price,
   };
 }

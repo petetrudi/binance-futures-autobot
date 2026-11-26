@@ -12,9 +12,26 @@ import type {
 } from '@bot/shared';
 import type { BotDatabase } from '../db/database.js';
 import type { BinanceFuturesClient } from '../market/binanceClient.js';
-import { formatPrice, formatQuantity } from '../market/precision.js';
-import { computeUnrealizedPnl } from './positionLifecycle.js';
+import { formatPrice } from '../market/precision.js';
+import {
+  computeUnrealizedPnl,
+  resolvePartialCloseQuantity,
+} from './positionLifecycle.js';
 import { estimateIsolatedLiquidationPrice } from '../risk/riskManager.js';
+
+export type PartialTpStage = 'TP1' | 'TP2';
+
+export interface PartialCloseParams {
+  position: Position;
+  stage: PartialTpStage;
+  closePctOfInitial: number;
+  newStopLoss: number;
+  activateTrailing: boolean;
+  execPrice: number;
+  filter: SymbolFilter;
+  riskConfig: RiskConfig;
+  reason: string;
+}
 
 export interface ExecutionBroker {
   readonly mode: TradingMode;
@@ -28,15 +45,7 @@ export interface ExecutionBroker {
     filter: SymbolFilter,
     riskConfig: RiskConfig,
   ): Promise<Position>;
-  partialClosePosition(
-    position: Position,
-    fraction: number,
-    newStopLoss: number,
-    execPrice: number,
-    filter: SymbolFilter,
-    riskConfig: RiskConfig,
-    reason: string,
-  ): Promise<Position>;
+  partialClosePosition(params: PartialCloseParams): Promise<Position>;
   updateStopLoss(
     position: Position,
     newStopLoss: number,
@@ -45,12 +54,45 @@ export interface ExecutionBroker {
   ): Promise<Position>;
   closePosition(
     position: Position,
-    action: Exclude<TradeAction, 'OPEN' | 'PARTIAL_TP1'>,
+    action: Exclude<TradeAction, 'OPEN' | 'PARTIAL_TP1' | 'PARTIAL_TP2'>,
     execPrice: number,
     riskConfig: RiskConfig,
     reason: string,
   ): Promise<Position>;
   reconcileStartup?(): Promise<void>;
+}
+
+function buildPartialUpdatedPosition(
+  position: Position,
+  stage: PartialTpStage,
+  activateTrailing: boolean,
+  formattedSl: number,
+  markPrice: number,
+  remainingQty: number,
+  netRealized: number,
+  fee: number,
+  slOrderId: string | null = position.slOrderId,
+): Position {
+  return {
+    ...position,
+    remainingQuantity: remainingQty,
+    isolatedMargin:
+      position.quantity > 0
+        ? position.isolatedMargin * (remainingQty / position.quantity)
+        : 0,
+    stopLoss: formattedSl,
+    slOrderId,
+    tp1Hit: stage === 'TP1' ? true : position.tp1Hit,
+    tp2Hit: stage === 'TP2' ? true : position.tp2Hit,
+    trailingActive: position.trailingActive || activateTrailing,
+    markPrice,
+    realizedPnl: position.realizedPnl + netRealized,
+    feesPaid: position.feesPaid + fee,
+    unrealizedPnl: computeUnrealizedPnl(
+      { ...position, remainingQuantity: remainingQty },
+      markPrice,
+    ),
+  };
 }
 
 function utcDayKey(ts = Date.now()): string {
@@ -148,7 +190,9 @@ export class PaperBroker implements ExecutionBroker {
       stopLoss: formatPrice(signal.stopLoss, filter),
       takeProfit1: formatPrice(signal.takeProfit1, filter),
       takeProfit2: formatPrice(signal.takeProfit2, filter),
+      takeProfit3: formatPrice(signal.takeProfit3, filter),
       tp1Hit: false,
+      tp2Hit: false,
       trailingActive: false,
       peakPrice: fillPrice,
       entryAtr: signal.atr,
@@ -189,26 +233,46 @@ export class PaperBroker implements ExecutionBroker {
     return pos;
   }
 
-  async partialClosePosition(
-    position: Position,
-    fraction: number,
-    newStopLoss: number,
-    execPrice: number,
-    filter: SymbolFilter,
-    riskConfig: RiskConfig,
-    reason: string,
-  ): Promise<Position> {
+  async partialClosePosition({
+    position,
+    stage,
+    closePctOfInitial,
+    newStopLoss,
+    activateTrailing,
+    execPrice,
+    filter,
+    riskConfig,
+    reason,
+  }: PartialCloseParams): Promise<Position> {
     const now = Date.now();
-    const rawCloseQty = position.remainingQuantity * fraction;
-    let closeQty = formatQuantity(rawCloseQty, filter);
-    if (closeQty <= 0 || closeQty >= position.remainingQuantity) {
-      closeQty = Number((position.remainingQuantity * 0.5).toFixed(filter.quantityPrecision));
+    const formattedSl = formatPrice(newStopLoss, filter);
+    const closeQty = resolvePartialCloseQuantity(
+      position.remainingQuantity,
+      position.quantity,
+      closePctOfInitial,
+      execPrice,
+      filter,
+    );
+
+    if (closeQty <= 0) {
+      const updated = buildPartialUpdatedPosition(
+        position,
+        stage,
+        activateTrailing,
+        formattedSl,
+        execPrice,
+        position.remainingQuantity,
+        0,
+        0,
+      );
+      this.db.upsertPosition(updated);
+      return updated;
     }
+
     const remainingQty = Math.max(
       0,
       Number((position.remainingQuantity - closeQty).toFixed(filter.quantityPrecision)),
     );
-
     const slip = riskConfig.slippagePct / 100;
     const fillPrice =
       position.side === 'LONG' ? execPrice * (1 - slip) : execPrice * (1 + slip);
@@ -223,26 +287,16 @@ export class PaperBroker implements ExecutionBroker {
     const paper = this.db.getPaperAccount();
     this.db.updatePaperAccount(paper.balance + netRealized);
 
-    const updatedMargin =
-      position.quantity > 0
-        ? position.isolatedMargin * (remainingQty / position.quantity)
-        : 0;
-
-    const updated: Position = {
-      ...position,
-      remainingQuantity: remainingQty,
-      isolatedMargin: updatedMargin,
-      stopLoss: formatPrice(newStopLoss, filter),
-      tp1Hit: true,
-      trailingActive: true,
-      markPrice: execPrice,
-      realizedPnl: position.realizedPnl + netRealized,
-      feesPaid: position.feesPaid + fee,
-      unrealizedPnl: computeUnrealizedPnl(
-        { ...position, remainingQuantity: remainingQty },
-        execPrice,
-      ),
-    };
+    const updated = buildPartialUpdatedPosition(
+      position,
+      stage,
+      activateTrailing,
+      formattedSl,
+      execPrice,
+      remainingQty,
+      netRealized,
+      fee,
+    );
 
     this.db.upsertPosition(updated);
     this.db.insertTrade({
@@ -251,7 +305,7 @@ export class PaperBroker implements ExecutionBroker {
       mode: 'PAPER',
       symbol: position.symbol,
       side: position.side,
-      action: 'PARTIAL_TP1',
+      action: stage === 'TP1' ? 'PARTIAL_TP1' : 'PARTIAL_TP2',
       price: fillPrice,
       quantity: closeQty,
       notional,
@@ -283,7 +337,7 @@ export class PaperBroker implements ExecutionBroker {
 
   async closePosition(
     position: Position,
-    action: Exclude<TradeAction, 'OPEN' | 'PARTIAL_TP1'>,
+    action: Exclude<TradeAction, 'OPEN' | 'PARTIAL_TP1' | 'PARTIAL_TP2'>,
     execPrice: number,
     riskConfig: RiskConfig,
     reason: string,
@@ -471,7 +525,7 @@ export class BinanceFuturesBroker implements ExecutionBroker {
     const fillPrice = entryRes.avgPrice > 0 ? entryRes.avgPrice : signal.entryPrice;
     const qty = entryRes.executedQty > 0 ? entryRes.executedQty : riskEval.quantity;
     const slPrice = formatPrice(signal.stopLoss, filter);
-    const tp2Price = formatPrice(signal.takeProfit2, filter);
+    const tp3Price = formatPrice(signal.takeProfit3, filter);
 
     const [slOrderId, tpOrderId] = await Promise.all([
       this.client
@@ -488,7 +542,7 @@ export class BinanceFuturesBroker implements ExecutionBroker {
           symbol: signal.symbol,
           side: closeSide,
           type: 'TAKE_PROFIT_MARKET',
-          stopPrice: tp2Price,
+          stopPrice: tp3Price,
           clientOrderId: `bot_tp_${signal.symbol}_${now}`.slice(0, 32),
         })
         .catch(() => null),
@@ -511,8 +565,10 @@ export class BinanceFuturesBroker implements ExecutionBroker {
       isolatedMargin: notional / riskEval.leverage,
       stopLoss: slPrice,
       takeProfit1: formatPrice(signal.takeProfit1, filter),
-      takeProfit2: tp2Price,
+      takeProfit2: formatPrice(signal.takeProfit2, filter),
+      takeProfit3: tp3Price,
       tp1Hit: false,
+      tp2Hit: false,
       trailingActive: false,
       peakPrice: fillPrice,
       entryAtr: signal.atr,
@@ -553,29 +609,26 @@ export class BinanceFuturesBroker implements ExecutionBroker {
     return pos;
   }
 
-  async partialClosePosition(
-    position: Position,
-    fraction: number,
-    newStopLoss: number,
-    execPrice: number,
-    filter: SymbolFilter,
-    riskConfig: RiskConfig,
-    reason: string,
-  ): Promise<Position> {
+  async partialClosePosition({
+    position,
+    stage,
+    closePctOfInitial,
+    newStopLoss,
+    activateTrailing,
+    execPrice,
+    filter,
+    riskConfig,
+    reason,
+  }: PartialCloseParams): Promise<Position> {
     const now = Date.now();
     const closeSide = position.side === 'LONG' ? 'SELL' : 'BUY';
-    const closeQty = formatQuantity(position.remainingQuantity * fraction, filter);
-    if (closeQty <= 0) {
-      return position;
-    }
-
-    const res = await this.client.placeMarketOrder({
-      symbol: position.symbol,
-      side: closeSide,
-      quantity: closeQty,
-      reduceOnly: true,
-      clientOrderId: `bot_tp1_${position.symbol}_${now}`.slice(0, 32),
-    });
+    const closeQty = resolvePartialCloseQuantity(
+      position.remainingQuantity,
+      position.quantity,
+      closePctOfInitial,
+      execPrice,
+      filter,
+    );
 
     if (position.slOrderId) {
       await this.client.cancelOrder(position.symbol, position.slOrderId);
@@ -587,9 +640,33 @@ export class BinanceFuturesBroker implements ExecutionBroker {
         side: closeSide,
         type: 'STOP_MARKET',
         stopPrice: formattedSl,
-        clientOrderId: `bot_besl_${position.symbol}_${now}`.slice(0, 32),
+        clientOrderId: `bot_${stage.toLowerCase()}sl_${position.symbol}_${now}`.slice(0, 32),
       })
       .catch(() => null);
+
+    if (closeQty <= 0) {
+      const updated = buildPartialUpdatedPosition(
+        position,
+        stage,
+        activateTrailing,
+        formattedSl,
+        execPrice,
+        position.remainingQuantity,
+        0,
+        0,
+        newSlOrderId,
+      );
+      this.db.upsertPosition(updated);
+      return updated;
+    }
+
+    const res = await this.client.placeMarketOrder({
+      symbol: position.symbol,
+      side: closeSide,
+      quantity: closeQty,
+      reduceOnly: true,
+      clientOrderId: `bot_${stage.toLowerCase()}_${position.symbol}_${now}`.slice(0, 32),
+    });
 
     const fillPrice = res.avgPrice > 0 ? res.avgPrice : execPrice;
     const executed = res.executedQty > 0 ? res.executedQty : closeQty;
@@ -605,25 +682,17 @@ export class BinanceFuturesBroker implements ExecutionBroker {
         : position.entryPrice - fillPrice) * executed;
     const netRealized = grossPnl - fee;
 
-    const updated: Position = {
-      ...position,
-      remainingQuantity: remainingQty,
-      isolatedMargin:
-        position.quantity > 0
-          ? position.isolatedMargin * (remainingQty / position.quantity)
-          : 0,
-      stopLoss: formattedSl,
-      slOrderId: newSlOrderId,
-      tp1Hit: true,
-      trailingActive: true,
-      markPrice: fillPrice,
-      realizedPnl: position.realizedPnl + netRealized,
-      feesPaid: position.feesPaid + fee,
-      unrealizedPnl: computeUnrealizedPnl(
-        { ...position, remainingQuantity: remainingQty },
-        fillPrice,
-      ),
-    };
+    const updated = buildPartialUpdatedPosition(
+      position,
+      stage,
+      activateTrailing,
+      formattedSl,
+      fillPrice,
+      remainingQty,
+      netRealized,
+      fee,
+      newSlOrderId,
+    );
 
     this.db.upsertPosition(updated);
     this.db.insertTrade({
@@ -632,7 +701,7 @@ export class BinanceFuturesBroker implements ExecutionBroker {
       mode: this.mode,
       symbol: position.symbol,
       side: position.side,
-      action: 'PARTIAL_TP1',
+      action: stage === 'TP1' ? 'PARTIAL_TP1' : 'PARTIAL_TP2',
       price: fillPrice,
       quantity: executed,
       notional,
@@ -681,7 +750,7 @@ export class BinanceFuturesBroker implements ExecutionBroker {
 
   async closePosition(
     position: Position,
-    action: Exclude<TradeAction, 'OPEN' | 'PARTIAL_TP1'>,
+    action: Exclude<TradeAction, 'OPEN' | 'PARTIAL_TP1' | 'PARTIAL_TP2'>,
     execPrice: number,
     riskConfig: RiskConfig,
     reason: string,
@@ -848,9 +917,11 @@ export class BinanceFuturesBroker implements ExecutionBroker {
       const fallbackSl =
         side === 'LONG' ? ex.entryPrice * 0.975 : ex.entryPrice * 1.025;
       const fallbackTp1 =
-        side === 'LONG' ? ex.entryPrice * 1.03 : ex.entryPrice * 0.97;
+        side === 'LONG' ? ex.entryPrice * 1.025 : ex.entryPrice * 0.975;
       const fallbackTp2 =
-        side === 'LONG' ? ex.entryPrice * 1.06 : ex.entryPrice * 0.94;
+        side === 'LONG' ? ex.entryPrice * 1.045 : ex.entryPrice * 0.955;
+      const fallbackTp3 =
+        side === 'LONG' ? ex.entryPrice * 1.075 : ex.entryPrice * 0.925;
 
       this.db.upsertPosition({
         id: randomUUID(),
@@ -867,7 +938,9 @@ export class BinanceFuturesBroker implements ExecutionBroker {
         stopLoss: fallbackSl,
         takeProfit1: fallbackTp1,
         takeProfit2: fallbackTp2,
+        takeProfit3: fallbackTp3,
         tp1Hit: false,
+        tp2Hit: false,
         trailingActive: false,
         peakPrice: ex.markPrice,
         entryAtr: ex.entryPrice * 0.01,

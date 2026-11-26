@@ -16,7 +16,10 @@ import { analyzeMultiTimeframe } from '../analysis/technicalAnalyzer.js';
 import { atr } from '../analysis/indicators.js';
 import { evaluateSignal } from '../strategy/decisionEngine.js';
 import { evaluateRisk, estimateIsolatedLiquidationPrice } from '../risk/riskManager.js';
-import { evaluatePositionTick } from '../execution/positionLifecycle.js';
+import {
+  evaluatePositionTick,
+  resolvePartialCloseQuantity,
+} from '../execution/positionLifecycle.js';
 import { roundToStep } from '../market/precision.js';
 
 export interface BacktestInput {
@@ -123,90 +126,102 @@ export function runHistoricalBacktest({
           : [bar.high, bar.low, bar.close];
 
       for (const px of checkPrices) {
-        if (!activePos) break;
-        const decision = evaluatePositionTick(
-          activePos,
-          px,
-          curAtr,
-          null,
-          bar.closeTime,
-          effectiveStrategy,
-        );
-
-        if (decision.type === 'HOLD') {
-          activePos.peakPrice = decision.updatedPeakPrice;
-        } else if (decision.type === 'UPDATE_TRAILING_SL') {
-          activePos.peakPrice = decision.updatedPeakPrice;
-          activePos.stopLoss = roundToStep(decision.newStopLoss, tickSize, 'round');
-          activePos.trailingActive = true;
-        } else if (decision.type === 'PARTIAL_TP1') {
-          const closeQty = roundToStep(
-            activePos.remainingQuantity * decision.closeQuantityFraction,
-            stepSize,
-            'floor',
+        for (let step = 0; step < 3; step++) {
+          if (!activePos) break;
+          const decision = evaluatePositionTick(
+            activePos,
+            px,
+            curAtr,
+            null,
+            bar.closeTime,
+            effectiveStrategy,
           );
-          if (closeQty > 0 && closeQty < activePos.remainingQuantity) {
+
+          if (decision.type === 'HOLD') {
+            activePos.peakPrice = decision.updatedPeakPrice;
+            break;
+          } else if (decision.type === 'UPDATE_TRAILING_SL') {
+            activePos.peakPrice = decision.updatedPeakPrice;
+            activePos.stopLoss = roundToStep(decision.newStopLoss, tickSize, 'round');
+            activePos.trailingActive = true;
+            break;
+          } else if (decision.type === 'PARTIAL_TP1' || decision.type === 'PARTIAL_TP2') {
+            const stage = decision.type === 'PARTIAL_TP1' ? 'TP1' : 'TP2';
+            const closeQty = resolvePartialCloseQuantity(
+              activePos.remainingQuantity,
+              activePos.quantity,
+              decision.closePctOfInitial,
+              decision.triggerPrice,
+              filter,
+            );
+            activePos.stopLoss = roundToStep(decision.newStopLoss, tickSize, 'round');
+            if (stage === 'TP1') activePos.tp1Hit = true;
+            else activePos.tp2Hit = true;
+            if (decision.activateTrailing) activePos.trailingActive = true;
+
+            if (closeQty > 0) {
+              const fill =
+                activePos.side === 'LONG'
+                  ? decision.triggerPrice * (1 - slipRate)
+                  : decision.triggerPrice * (1 + slipRate);
+              const fee = fill * closeQty * feeRate;
+              const gross =
+                (activePos.side === 'LONG'
+                  ? fill - activePos.entryPrice
+                  : activePos.entryPrice - fill) * closeQty;
+              const net = gross - fee;
+              balance += net;
+              activePos.remainingQuantity = Number(
+                (activePos.remainingQuantity - closeQty).toFixed(filter.quantityPrecision),
+              );
+              activePos.realizedPnl += net;
+              activePos.feesPaid += fee;
+              trades.push({
+                entryTime: activePos.openedAt,
+                exitTime: bar.closeTime,
+                side: activePos.side,
+                entryPrice: activePos.entryPrice,
+                exitPrice: fill,
+                quantity: closeQty,
+                realizedPnl: net,
+                feesPaid: fee,
+                exitReason: `Partial ${stage}`,
+                confidence: activePos.confidence,
+              });
+            }
+          } else if (
+            decision.type === 'CLOSE_SL' ||
+            decision.type === 'CLOSE_TP3' ||
+            decision.type === 'CLOSE_TIME_EXIT'
+          ) {
             const fill =
               activePos.side === 'LONG'
                 ? decision.triggerPrice * (1 - slipRate)
                 : decision.triggerPrice * (1 + slipRate);
-            const fee = fill * closeQty * feeRate;
+            const qty = activePos.remainingQuantity;
+            const fee = fill * qty * feeRate;
             const gross =
               (activePos.side === 'LONG'
                 ? fill - activePos.entryPrice
-                : activePos.entryPrice - fill) * closeQty;
+                : activePos.entryPrice - fill) * qty;
             const net = gross - fee;
             balance += net;
-            activePos.remainingQuantity -= closeQty;
-            activePos.realizedPnl += net;
-            activePos.feesPaid += fee;
-            activePos.tp1Hit = true;
-            activePos.trailingActive = true;
-            activePos.stopLoss = roundToStep(decision.newStopLoss, tickSize, 'round');
             trades.push({
               entryTime: activePos.openedAt,
               exitTime: bar.closeTime,
               side: activePos.side,
               entryPrice: activePos.entryPrice,
               exitPrice: fill,
-              quantity: closeQty,
+              quantity: qty,
               realizedPnl: net,
-              feesPaid: fee,
-              exitReason: 'Partial TP1',
+              feesPaid: activePos.feesPaid + fee,
+              exitReason: decision.reason,
               confidence: activePos.confidence,
             });
+            lastClosedAt = bar.closeTime;
+            activePos = null;
+            break;
           }
-        } else if (
-          decision.type === 'CLOSE_SL' ||
-          decision.type === 'CLOSE_TP2' ||
-          decision.type === 'CLOSE_TIME_EXIT'
-        ) {
-          const fill =
-            activePos.side === 'LONG'
-              ? decision.triggerPrice * (1 - slipRate)
-              : decision.triggerPrice * (1 + slipRate);
-          const qty = activePos.remainingQuantity;
-          const fee = fill * qty * feeRate;
-          const gross =
-            (activePos.side === 'LONG'
-              ? fill - activePos.entryPrice
-              : activePos.entryPrice - fill) * qty;
-          const net = gross - fee;
-          balance += net;
-          trades.push({
-            entryTime: activePos.openedAt,
-            exitTime: bar.closeTime,
-            side: activePos.side,
-            entryPrice: activePos.entryPrice,
-            exitPrice: fill,
-            quantity: qty,
-            realizedPnl: net,
-            feesPaid: activePos.feesPaid + fee,
-            exitReason: decision.reason,
-            confidence: activePos.confidence,
-          });
-          lastClosedAt = bar.closeTime;
-          activePos = null;
         }
       }
     }
@@ -282,7 +297,9 @@ export function runHistoricalBacktest({
             stopLoss: signal.stopLoss,
             takeProfit1: signal.takeProfit1,
             takeProfit2: signal.takeProfit2,
+            takeProfit3: signal.takeProfit3,
             tp1Hit: false,
+            tp2Hit: false,
             trailingActive: false,
             peakPrice: fill,
             entryAtr: signal.atr,

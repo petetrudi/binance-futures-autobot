@@ -403,13 +403,14 @@ export class BotOrchestrator extends EventEmitter {
                   stopLoss: opened.stopLoss,
                   tp1: opened.takeProfit1,
                   tp2: opened.takeProfit2,
+                  tp3: opened.takeProfit3,
                 },
               );
               void this.telegram.sendAlert(`OPEN ${opened.side} ${opened.symbol}`, [
                 `Mode: ${this.mode} (${opened.leverage}x Isolated)`,
                 `Entry: ${opened.entryPrice}`,
                 `Qty: ${opened.quantity}`,
-                `SL: ${opened.stopLoss} | TP1: ${opened.takeProfit1} | TP2: ${opened.takeProfit2}`,
+                `SL: ${opened.stopLoss} | TP1: ${opened.takeProfit1} | TP2: ${opened.takeProfit2} | TP3: ${opened.takeProfit3}`,
                 `Confidence: ${signal.confidence}%`,
               ]);
               this.emitSnapshotUpdate();
@@ -456,6 +457,7 @@ export class BotOrchestrator extends EventEmitter {
     action:
       | 'CLOSE_SL'
       | 'CLOSE_TP2'
+      | 'CLOSE_TP3'
       | 'CLOSE_TRAILING'
       | 'CLOSE_EMERGENCY'
       | 'CLOSE_TIME_EXIT'
@@ -561,24 +563,32 @@ export class BotOrchestrator extends EventEmitter {
             unrealizedPnl: computeUnrealizedPnl(pos, markPrice),
           };
           this.db.upsertPosition(updated);
-        } else if (decision.type === 'PARTIAL_TP1') {
-          const updated = await this.broker.partialClosePosition(
-            pos,
-            decision.closeQuantityFraction,
-            decision.newStopLoss,
-            markPrice,
+        } else if (decision.type === 'PARTIAL_TP1' || decision.type === 'PARTIAL_TP2') {
+          const stage = decision.type === 'PARTIAL_TP1' ? 'TP1' : 'TP2';
+          const updated = await this.broker.partialClosePosition({
+            position: pos,
+            stage,
+            closePctOfInitial: decision.closePctOfInitial,
+            newStopLoss: decision.newStopLoss,
+            activateTrailing: decision.activateTrailing,
+            execPrice: markPrice,
             filter,
-            this.riskConfig,
-            decision.reason,
-          );
+            riskConfig: this.riskConfig,
+            reason: decision.reason,
+          });
+          const slDesc =
+            stage === 'TP1'
+              ? `Break-Even (${updated.stopLoss})`
+              : `TP1 (${updated.stopLoss}) + Trailing`;
           this.log(
             'SUCCESS',
             'Position',
-            `TP1 partial close on ${pos.symbol}: SL moved to BE (${updated.stopLoss})`,
+            `${stage} partial close on ${pos.symbol}: SL moved to ${slDesc}`,
           );
-          void this.telegram.sendAlert(`PARTIAL TP1 ${pos.symbol}`, [
+          void this.telegram.sendAlert(`PARTIAL ${stage} ${pos.symbol}`, [
             `Price: ${markPrice}`,
-            `Moved SL to Break-Even: ${updated.stopLoss}`,
+            `SL moved to ${slDesc}`,
+            `Remaining Qty: ${updated.remainingQuantity}`,
           ]);
           this.emitSnapshotUpdate();
         } else if (decision.type === 'UPDATE_TRAILING_SL') {
@@ -595,8 +605,8 @@ export class BotOrchestrator extends EventEmitter {
             markPrice,
             decision.reason,
           );
-        } else if (decision.type === 'CLOSE_TP2') {
-          await this.closePositionInternal(pos, 'CLOSE_TP2', markPrice, decision.reason);
+        } else if (decision.type === 'CLOSE_TP3') {
+          await this.closePositionInternal(pos, 'CLOSE_TP3', markPrice, decision.reason);
         } else if (decision.type === 'EMERGENCY_CLOSE') {
           await this.closePositionInternal(
             pos,
@@ -894,13 +904,28 @@ export class BotOrchestrator extends EventEmitter {
 
     let timersNeedReset = false;
     if (payload.strategy) {
+      const mergedStrat = { ...this.strategyConfig, ...payload.strategy };
+      if (
+        mergedStrat.tp1RiskReward <= 0 ||
+        mergedStrat.tp2RiskReward <= mergedStrat.tp1RiskReward ||
+        mergedStrat.tp3RiskReward <= mergedStrat.tp2RiskReward
+      ) {
+        throw new Error('Take Profit R:R targets must satisfy 0 < TP1 < TP2 < TP3');
+      }
+      if (
+        mergedStrat.tp1ClosePct < 10 ||
+        mergedStrat.tp2ClosePct < 10 ||
+        mergedStrat.tp1ClosePct + mergedStrat.tp2ClosePct > 90
+      ) {
+        throw new Error('TP1 and TP2 close percentages must be >= 10% and total <= 90%');
+      }
       if (
         payload.strategy.scanIntervalSeconds !== undefined ||
         payload.strategy.newsRefreshMinutes !== undefined
       ) {
         timersNeedReset = true;
       }
-      this.strategyConfig = { ...this.strategyConfig, ...payload.strategy };
+      this.strategyConfig = mergedStrat;
       this.db.saveStrategyConfig(this.strategyConfig);
     }
 

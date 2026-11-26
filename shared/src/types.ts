@@ -100,6 +100,7 @@ export interface TradePlan {
   stopLoss: number;
   takeProfit1: number;
   takeProfit2: number;
+  takeProfit3: number;
   riskRewardRatio: number;
   stopDistancePct: number;
 }
@@ -164,6 +165,7 @@ export interface TradeSignal {
   stopLoss: number;
   takeProfit1: number;
   takeProfit2: number;
+  takeProfit3: number;
   riskRewardRatio: number;
   atr: number;
   executed: boolean;
@@ -195,6 +197,9 @@ export interface StrategyConfig {
   stopLossAtrMultiplier: number;
   tp1RiskReward: number;
   tp2RiskReward: number;
+  tp3RiskReward: number;
+  tp1ClosePct: number;
+  tp2ClosePct: number;
   trailingAtrMultiplier: number;
   maxHoldHours: number;
   scanIntervalSeconds: number;
@@ -233,7 +238,9 @@ export interface Position {
   stopLoss: number;
   takeProfit1: number;
   takeProfit2: number;
+  takeProfit3: number;
   tp1Hit: boolean;
+  tp2Hit: boolean;
   trailingActive: boolean;
   peakPrice: number;
   entryAtr: number;
@@ -253,8 +260,10 @@ export interface Position {
 export type TradeAction =
   | 'OPEN'
   | 'PARTIAL_TP1'
+  | 'PARTIAL_TP2'
   | 'CLOSE_SL'
   | 'CLOSE_TP2'
+  | 'CLOSE_TP3'
   | 'CLOSE_TRAILING'
   | 'CLOSE_EMERGENCY'
   | 'CLOSE_TIME_EXIT'

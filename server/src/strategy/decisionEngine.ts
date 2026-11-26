@@ -128,6 +128,7 @@ export function evaluateSignal({
     stopLoss: plan.stopLoss,
     takeProfit1: plan.takeProfit1,
     takeProfit2: plan.takeProfit2,
+    takeProfit3: plan.takeProfit3,
     riskRewardRatio: plan.riskRewardRatio,
     atr: technical.indicators15m.atr14,
     executed: false,

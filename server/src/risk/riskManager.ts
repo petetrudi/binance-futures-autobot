@@ -155,7 +155,7 @@ export function evaluateRisk({
   }
 
   const riskUsdt = quantity * stopDist;
-  const rewardUsdt = quantity * Math.abs(signal.takeProfit2 - entry);
+  const rewardUsdt = quantity * Math.abs(signal.takeProfit3 - entry);
   const estimatedLiquidationPrice = estimateIsolatedLiquidationPrice(
     entry,
     leverage,
