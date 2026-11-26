@@ -122,4 +122,16 @@ describe('Auto-Scanner ranking engine', () => {
     expect(symbols).toContain('SOLUSDT');
     expect(symbols).not.toContain('DUMMYUSDT');
   });
+
+  it('defaults to scanning top 20 candidates when 25+ liquid pairs exist', () => {
+    expect(DEFAULT_STRATEGY_CONFIG.scannerTopN).toBe(20);
+    const tickers: MarketTicker[] = Array.from({ length: 25 }, (_, i) =>
+      makeTicker(i === 0 ? 'BTCUSDT' : `COIN${i}USDT`, 800_000_000 - i * 15_000_000, 3 + (i % 5), 6),
+    );
+    const allow = new Set(tickers.map((t) => t.symbol));
+    const candidates = scanMarketCandidates(tickers, [], allow, DEFAULT_STRATEGY_CONFIG);
+
+    expect(candidates).toHaveLength(20);
+    expect(candidates.some((c) => c.symbol === 'BTCUSDT')).toBe(true);
+  });
 });

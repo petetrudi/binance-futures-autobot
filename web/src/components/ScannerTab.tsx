@@ -26,6 +26,9 @@ export function ScannerTab({
             <h2 className="text-sm font-bold text-slate-100">
               Auto-Scanner & Multi-Timeframe Decision Inspector
             </h2>
+            <span className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-bold text-cyan-300">
+              {scanner.length} Pairs
+            </span>
           </div>
           <p className="mt-0.5 text-xs text-slate-400">
             Automatically ranks USD-M Perpetual pairs by 24h liquidity, intraday volatility, funding skew, and live news catalysts, then evaluates 15m/1h/4h technicals + AI sentiment.

@@ -15,7 +15,7 @@ export const DEFAULT_RISK_CONFIG: RiskConfig = {
 
 export const DEFAULT_STRATEGY_CONFIG: StrategyConfig = {
   minVolume24hUsdt: 20_000_000,
-  scannerTopN: 8,
+  scannerTopN: 20,
   minConfidence: 72,
   minRiskReward: 1.8,
   minAdx: 18,

@@ -189,7 +189,7 @@ describe('BotDatabase (node:sqlite)', () => {
       .prepare('INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)')
       .run(
         'strategy_config',
-        JSON.stringify({ tp1RiskReward: 1.5, tp2RiskReward: 2.8, minConfidence: 72 }),
+        JSON.stringify({ tp1RiskReward: 1.5, tp2RiskReward: 2.8, scannerTopN: 8, minConfidence: 72 }),
         now,
       );
     raw
@@ -217,6 +217,13 @@ describe('BotDatabase (node:sqlite)', () => {
       expect(strat.tp3RiskReward).toBe(3.0);
       expect(strat.tp1ClosePct).toBe(50);
       expect(strat.tp2ClosePct).toBe(30);
+      expect(strat.scannerTopN).toBe(20);
+
+      // Subsequent custom user change (e.g. 15) should persist across restarts
+      migrated.saveStrategyConfig({ ...strat, scannerTopN: 15 });
+      migrated.close();
+      migrated = new BotDatabase(dbPath);
+      expect(migrated.getStrategyConfig().scannerTopN).toBe(15);
 
       const closed = migrated.getClosedPositions('TESTNET');
       expect(closed).toHaveLength(1);

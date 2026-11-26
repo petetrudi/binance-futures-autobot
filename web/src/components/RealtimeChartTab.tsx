@@ -66,7 +66,7 @@ export function RealtimeChartTab({
     new Set([
       symbol,
       ...positions.map((p) => p.symbol),
-      ...scanner.slice(0, 8).map((c) => c.symbol),
+      ...scanner.map((c) => c.symbol),
     ]),
   );
 

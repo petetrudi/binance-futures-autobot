@@ -53,6 +53,7 @@ export function SettingsAndHistoryTab({
   const [minVolumeM, setMinVolumeM] = useState(
     Math.round(settings.strategy.minVolume24hUsdt / 1_000_000),
   );
+  const [scannerTopN, setScannerTopN] = useState(settings.strategy.scannerTopN ?? 20);
   const [scanIntervalSec, setScanIntervalSec] = useState(
     settings.strategy.scanIntervalSeconds,
   );
@@ -83,6 +84,7 @@ export function SettingsAndHistoryTab({
     setTp1ClosePct(settings.strategy.tp1ClosePct ?? 50);
     setTp2ClosePct(settings.strategy.tp2ClosePct ?? 30);
     setMinVolumeM(Math.round(settings.strategy.minVolume24hUsdt / 1_000_000));
+    setScannerTopN(settings.strategy.scannerTopN ?? 20);
     setScanIntervalSec(settings.strategy.scanIntervalSeconds);
     setEnableAutoTrading(settings.strategy.enableAutoTrading);
   }, [settings]);
@@ -114,6 +116,7 @@ export function SettingsAndHistoryTab({
         tp3RiskReward,
         tp1ClosePct,
         tp2ClosePct,
+        scannerTopN,
         minVolume24hUsdt: minVolumeM * 1_000_000,
         scanIntervalSeconds: scanIntervalSec,
         enableAutoTrading,
@@ -268,6 +271,19 @@ export function SettingsAndHistoryTab({
                   max={1000}
                   value={minVolumeM}
                   onChange={(e) => setMinVolumeM(Number(e.target.value))}
+                  className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
+                />
+              </label>
+
+              <label className="flex flex-col text-[11px] text-slate-400">
+                Top Scan Pairs
+                <input
+                  type="number"
+                  min={3}
+                  max={40}
+                  step={1}
+                  value={scannerTopN}
+                  onChange={(e) => setScannerTopN(Number(e.target.value))}
                   className="font-mono-num mt-1 h-[30px] w-full rounded border border-slate-700 bg-[#0E1420] px-2 text-xs text-slate-100"
                 />
               </label>

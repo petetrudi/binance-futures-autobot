@@ -432,6 +432,19 @@ export class BotOrchestrator extends EventEmitter {
             error: err instanceof Error ? err.message : String(err),
           });
         }
+        if (candidates.length > 10) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
+
+      const activeSymbols = new Set([
+        ...candidates.map((c) => c.symbol),
+        ...this.db.getOpenPositions(this.mode).map((p) => p.symbol),
+      ]);
+      for (const sym of this.latestSignals.keys()) {
+        if (!activeSymbols.has(sym)) {
+          this.latestSignals.delete(sym);
+        }
       }
 
       this.lastScanAt = Date.now();
@@ -905,6 +918,13 @@ export class BotOrchestrator extends EventEmitter {
     let timersNeedReset = false;
     if (payload.strategy) {
       const mergedStrat = { ...this.strategyConfig, ...payload.strategy };
+      if (
+        !Number.isInteger(mergedStrat.scannerTopN) ||
+        mergedStrat.scannerTopN < 3 ||
+        mergedStrat.scannerTopN > 40
+      ) {
+        throw new Error('Top scan pairs (scannerTopN) must be an integer between 3 and 40');
+      }
       if (
         mergedStrat.tp1RiskReward <= 0 ||
         mergedStrat.tp2RiskReward <= mergedStrat.tp1RiskReward ||

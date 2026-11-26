@@ -223,12 +223,18 @@ export class BotDatabase {
     }
 
     const currentStrat = this.getSetting<Partial<StrategyConfig>>('strategy_config', {});
+    const migratedScanner20 = this.getSetting<boolean>('migrated_scanner_top_20', false);
+    const needsScanner20Migration =
+      !migratedScanner20 &&
+      (currentStrat.scannerTopN === undefined || currentStrat.scannerTopN === 8);
+
     if (
       currentStrat.minConfidence === undefined ||
       currentStrat.minConfidence < 70 ||
       currentStrat.tp3RiskReward === undefined ||
       currentStrat.tp1ClosePct === undefined ||
-      currentStrat.tp2ClosePct === undefined
+      currentStrat.tp2ClosePct === undefined ||
+      needsScanner20Migration
     ) {
       this.saveStrategyConfig({
         ...DEFAULT_STRATEGY_CONFIG,
@@ -237,6 +243,9 @@ export class BotDatabase {
           currentStrat.minConfidence === undefined || currentStrat.minConfidence < 70
             ? 72
             : currentStrat.minConfidence,
+        scannerTopN: needsScanner20Migration
+          ? DEFAULT_STRATEGY_CONFIG.scannerTopN
+          : (currentStrat.scannerTopN ?? DEFAULT_STRATEGY_CONFIG.scannerTopN),
         tp1RiskReward:
           currentStrat.tp1RiskReward === undefined || currentStrat.tp1RiskReward === 1.5
             ? DEFAULT_STRATEGY_CONFIG.tp1RiskReward
@@ -250,6 +259,9 @@ export class BotDatabase {
         tp1ClosePct: currentStrat.tp1ClosePct ?? DEFAULT_STRATEGY_CONFIG.tp1ClosePct,
         tp2ClosePct: currentStrat.tp2ClosePct ?? DEFAULT_STRATEGY_CONFIG.tp2ClosePct,
       });
+    }
+    if (!migratedScanner20) {
+      this.setSetting('migrated_scanner_top_20', true);
     }
 
     const existingPaper = this.db
