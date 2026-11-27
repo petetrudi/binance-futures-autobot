@@ -23,6 +23,14 @@ export interface PaperAccountRow {
   updatedAt: number;
 }
 
+export interface StoredPinRecord {
+  salt: string;
+  hash: string;
+  source: 'default' | 'env' | 'custom';
+  envDigest?: string;
+  updatedAt: number;
+}
+
 function utcDayKey(ts = Date.now()): string {
   return new Date(ts).toISOString().slice(0, 10);
 }
@@ -346,6 +354,14 @@ export class BotDatabase {
 
   saveTradingMode(mode: TradingMode): void {
     this.setSetting('trading_mode', mode);
+  }
+
+  getPinRecord(): StoredPinRecord | null {
+    return this.getSetting<StoredPinRecord | null>('dashboard_pin', null);
+  }
+
+  savePinRecord(record: StoredPinRecord): void {
+    this.setSetting('dashboard_pin', record);
   }
 
   getPaperAccount(): PaperAccountRow {

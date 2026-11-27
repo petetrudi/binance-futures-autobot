@@ -1,15 +1,28 @@
 import { Router, type Request, type Response } from 'express';
 import type {
+  AuthStatusResponse,
   BacktestRequest,
   SettingsUpdatePayload,
   Timeframe,
 } from '@bot/shared';
+import { extractBearerToken, type PinAuthService } from '../auth/pinAuth.js';
 import type { BotDatabase } from '../db/database.js';
 import type { BotOrchestrator } from '../engine/botOrchestrator.js';
+
+function getClientIp(req: Request): string {
+  const fwd = req.headers['x-forwarded-for'];
+  const raw = Array.isArray(fwd) ? fwd[0] : fwd;
+  if (raw) {
+    const first = raw.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  return req.socket.remoteAddress || req.ip || 'unknown';
+}
 
 export function createApiRouter(
   orchestrator: BotOrchestrator,
   db: BotDatabase,
+  pinAuth?: PinAuthService,
 ): Router {
   const router = Router();
 
@@ -18,8 +31,83 @@ export function createApiRouter(
     res.json({
       ok: true,
       db: 'connected',
-      ...status,
+      pinRequired: Boolean(pinAuth),
+      uptimeSeconds: status.uptimeSeconds,
     });
+  });
+
+  router.get('/auth/status', (req: Request, res: Response) => {
+    if (!pinAuth) {
+      const payload: AuthStatusResponse = {
+        pinRequired: false,
+        pinLength: 6,
+        authenticated: true,
+      };
+      res.json(payload);
+      return;
+    }
+    const token = extractBearerToken(req.headers.authorization);
+    const authenticated = pinAuth.verifyToken(token);
+    const payload: AuthStatusResponse = {
+      pinRequired: true,
+      pinLength: 6,
+      authenticated,
+      ...(authenticated ? { isDefaultPin: pinAuth.isDefaultPin() } : {}),
+    };
+    res.json(payload);
+  });
+
+  router.post('/auth/verify', (req: Request, res: Response) => {
+    if (!pinAuth) {
+      res.json({ token: '', expiresAt: 0, isDefaultPin: false });
+      return;
+    }
+    const result = pinAuth.verifyPin(String(req.body?.pin ?? ''), getClientIp(req));
+    if (!result.ok) {
+      res.status(result.status).json({
+        error: result.error,
+        remainingAttempts: result.remainingAttempts,
+        retryAfterSeconds: result.retryAfterSeconds,
+      });
+      return;
+    }
+    res.json({
+      token: result.token,
+      expiresAt: result.expiresAt,
+      isDefaultPin: result.isDefaultPin,
+    });
+  });
+
+  if (pinAuth) {
+    router.use((req, res, next) => {
+      const token = extractBearerToken(req.headers.authorization);
+      if (!pinAuth.verifyToken(token)) {
+        res.status(401).json({ error: 'Akses ditolak: PIN diperlukan.' });
+        return;
+      }
+      next();
+    });
+  }
+
+  router.post('/auth/change-pin', (req: Request, res: Response) => {
+    if (!pinAuth) {
+      res.status(400).json({ error: 'PIN authentication is not enabled.' });
+      return;
+    }
+    try {
+      const currentPin = String(req.body?.currentPin ?? '');
+      const newPin = String(req.body?.newPin ?? '');
+      const session = pinAuth.changePin(currentPin, newPin);
+      res.json({
+        token: session.token,
+        expiresAt: session.expiresAt,
+        isDefaultPin: false,
+      });
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'Gagal mengganti PIN',
+      });
+    }
   });
 
   router.get('/dashboard', async (_req: Request, res: Response) => {

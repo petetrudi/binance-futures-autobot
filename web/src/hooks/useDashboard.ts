@@ -6,15 +6,16 @@ import type {
 } from '@bot/shared';
 import { api } from '../lib/api.js';
 
-export function useDashboard() {
+export function useDashboard(authToken: string | null, onUnauthorized?: () => void) {
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const reconnectTimer = useRef<number | null>(null);
 
   const reload = useCallback(async () => {
+    if (!authToken) return;
     try {
       const data = await api.getDashboard();
       setSnapshot(data);
@@ -24,9 +25,18 @@ export function useDashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [authToken]);
 
   useEffect(() => {
+    if (!authToken) {
+      setSnapshot(null);
+      setWsConnected(false);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
+    setLoading(true);
     void reload();
 
     let closed = false;
@@ -35,7 +45,7 @@ export function useDashboard() {
     const connect = () => {
       if (closed) return;
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${proto}//${window.location.host}/ws`;
+      const wsUrl = `${proto}//${window.location.host}/ws?token=${encodeURIComponent(authToken)}`;
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => setWsConnected(true);
@@ -81,8 +91,13 @@ export function useDashboard() {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (evt) => {
         setWsConnected(false);
+        if (evt.code === 4401) {
+          closed = true;
+          onUnauthorized?.();
+          return;
+        }
         if (!closed) {
           reconnectTimer.current = window.setTimeout(connect, 2500);
         }
@@ -100,7 +115,7 @@ export function useDashboard() {
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       ws?.close();
     };
-  }, [reload]);
+  }, [authToken, onUnauthorized, reload]);
 
   const runAction = useCallback(
     async (label: string, fn: () => Promise<void>) => {

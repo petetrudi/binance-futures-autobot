@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   Activity,
   Bot,
+  Lock,
   Pause,
   Play,
   ShieldAlert,
@@ -19,6 +20,7 @@ interface TopBarProps {
   onStart: () => void;
   onPause: () => void;
   onKillSwitch: () => void;
+  onLock: () => void;
 }
 
 export function TopBar({
@@ -28,6 +30,7 @@ export function TopBar({
   onStart,
   onPause,
   onKillSwitch,
+  onLock,
 }: TopBarProps) {
   const [confirmKill, setConfirmKill] = useState(false);
 
@@ -147,6 +150,16 @@ export function TopBar({
               </button>
             </div>
           )}
+
+          <button
+            type="button"
+            onClick={onLock}
+            aria-label="Kunci Terminal"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700/80 bg-white/[0.04] px-2.5 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-cyan-500/40 hover:bg-cyan-500/10 hover:text-cyan-200"
+          >
+            <Lock aria-hidden="true" className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Kunci</span>
+          </button>
         </div>
       </div>
     </header>

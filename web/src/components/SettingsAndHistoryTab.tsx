@@ -1,26 +1,41 @@
 import { useEffect, useState } from 'react';
-import { History, KeyRound, RotateCcw, Save, Sliders, Terminal } from 'lucide-react';
+import {
+  History,
+  KeyRound,
+  Lock,
+  RotateCcw,
+  Save,
+  ShieldCheck,
+  Sliders,
+  Terminal,
+} from 'lucide-react';
 import type {
+  AuthVerifyResponse,
   DashboardSnapshot,
   SettingsUpdatePayload,
   TradingMode,
 } from '@bot/shared';
+import { api } from '../lib/api.js';
 import { fmtClock, fmtPrice, fmtUsdt } from '../lib/format.js';
 
 interface SettingsAndHistoryTabProps {
   snapshot: DashboardSnapshot;
   busyAction: string | null;
+  isDefaultPin?: boolean;
   onSaveSettings: (payload: SettingsUpdatePayload) => void;
   onResetPaper: (balance: number) => void;
   onOpenChart?: (symbol: string) => void;
+  onPinChanged?: (session: AuthVerifyResponse) => void;
 }
 
 export function SettingsAndHistoryTab({
   snapshot,
   busyAction,
+  isDefaultPin = false,
   onSaveSettings,
   onResetPaper,
   onOpenChart,
+  onPinChanged,
 }: SettingsAndHistoryTabProps) {
   const { settings, trades, logs } = snapshot;
 
@@ -67,6 +82,48 @@ export function SettingsAndHistoryTab({
   const [telegramBotToken, setTelegramBotToken] = useState('');
   const [telegramChatId, setTelegramChatId] = useState('');
   const [paperResetAmount, setPaperResetAmount] = useState(500);
+
+  // Dashboard PIN management state
+  const [currentPin, setCurrentPin] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [pinSaving, setPinSaving] = useState(false);
+  const [pinFeedback, setPinFeedback] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+
+  async function handlePinSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setPinFeedback(null);
+    if (!/^\d{6}$/.test(newPin)) {
+      setPinFeedback({ type: 'error', text: 'PIN baru harus tepat 6 digit angka.' });
+      return;
+    }
+    if (newPin !== confirmPin) {
+      setPinFeedback({ type: 'error', text: 'Konfirmasi PIN baru tidak cocok.' });
+      return;
+    }
+    setPinSaving(true);
+    try {
+      const nextSession = await api.changePin(currentPin, newPin);
+      onPinChanged?.(nextSession);
+      setCurrentPin('');
+      setNewPin('');
+      setConfirmPin('');
+      setPinFeedback({
+        type: 'success',
+        text: 'PIN akses berhasil diperbarui. Semua sesi lain otomatis dicabut.',
+      });
+    } catch (err) {
+      setPinFeedback({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Gagal memperbarui PIN',
+      });
+    } finally {
+      setPinSaving(false);
+    }
+  }
 
   useEffect(() => {
     setMode(settings.mode);
@@ -493,6 +550,93 @@ export function SettingsAndHistoryTab({
             )}
           </div>
         </div>
+      </form>
+
+      {/* Dashboard Access PIN Security */}
+      <form
+        onSubmit={handlePinSubmit}
+        className="rounded-xl border border-slate-800/90 bg-[#0E1420] p-4"
+      >
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Lock className="h-4 w-4 text-cyan-400" />
+            <h3 className="text-sm font-bold text-slate-100">
+              Keamanan Akses Dashboard (PIN 6-Digit)
+            </h3>
+            {isDefaultPin && (
+              <span className="rounded-md border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">
+                Masih PIN Default — Segera Ganti
+              </span>
+            )}
+          </div>
+          <button
+            type="submit"
+            disabled={pinSaving}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-3 py-1.5 text-xs font-bold text-cyan-200 transition hover:bg-cyan-500/25 disabled:opacity-50"
+          >
+            <ShieldCheck className="h-3.5 w-3.5" />
+            {pinSaving ? 'Menyimpan...' : 'Ganti PIN'}
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="flex flex-col text-[11px] text-slate-400">
+            <label htmlFor="pin-current">PIN Saat Ini</label>
+            <input
+              id="pin-current"
+              type="password"
+              inputMode="numeric"
+              maxLength={6}
+              autoComplete="off"
+              placeholder="6 digit angka"
+              value={currentPin}
+              onChange={(e) => setCurrentPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              required
+              className="font-mono-num mt-1 h-[32px] w-full rounded border border-slate-700 bg-[#080C14] px-2.5 text-xs tracking-[0.25em] text-slate-100"
+            />
+          </div>
+          <div className="flex flex-col text-[11px] text-slate-400">
+            <label htmlFor="pin-new">PIN Baru (6 Digit)</label>
+            <input
+              id="pin-new"
+              type="password"
+              inputMode="numeric"
+              maxLength={6}
+              autoComplete="off"
+              placeholder="6 digit angka"
+              value={newPin}
+              onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              required
+              className="font-mono-num mt-1 h-[32px] w-full rounded border border-slate-700 bg-[#080C14] px-2.5 text-xs tracking-[0.25em] text-slate-100"
+            />
+          </div>
+          <div className="flex flex-col text-[11px] text-slate-400">
+            <label htmlFor="pin-confirm">Konfirmasi PIN Baru</label>
+            <input
+              id="pin-confirm"
+              type="password"
+              inputMode="numeric"
+              maxLength={6}
+              autoComplete="off"
+              placeholder="Ulangi 6 digit"
+              value={confirmPin}
+              onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              required
+              className="font-mono-num mt-1 h-[32px] w-full rounded border border-slate-700 bg-[#080C14] px-2.5 text-xs tracking-[0.25em] text-slate-100"
+            />
+          </div>
+        </div>
+
+        {pinFeedback && (
+          <p
+            role={pinFeedback.type === 'error' ? 'alert' : 'status'}
+            className={`mt-2.5 text-xs font-medium ${
+              pinFeedback.type === 'error' ? 'text-rose-400' : 'text-emerald-400'
+            }`}
+          >
+            {pinFeedback.text}
+          </p>
+        )}
       </form>
 
       {/* Trade Ledger + System Logs */}

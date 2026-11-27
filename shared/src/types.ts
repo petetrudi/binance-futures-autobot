@@ -426,6 +426,19 @@ export interface CandleChartResponse {
   newsContext: CoinNewsContext | null;
 }
 
+export interface AuthStatusResponse {
+  pinRequired: boolean;
+  pinLength: number;
+  authenticated: boolean;
+  isDefaultPin?: boolean;
+}
+
+export interface AuthVerifyResponse {
+  token: string;
+  expiresAt: number;
+  isDefaultPin: boolean;
+}
+
 export interface DashboardSnapshot {
   status: BotStatus;
   account: AccountSummary;

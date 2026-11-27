@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   FlaskConical,
   LayoutDashboard,
@@ -8,16 +8,17 @@ import {
   Sliders,
   X,
 } from 'lucide-react';
-import type { CandleChartResponse, Timeframe } from '@bot/shared';
+import type { AuthVerifyResponse, CandleChartResponse, Timeframe } from '@bot/shared';
 import { BacktestTab } from './components/BacktestTab.js';
 import { NewsTab } from './components/NewsTab.js';
 import { OverviewTab } from './components/OverviewTab.js';
+import { PinLockScreen } from './components/PinLockScreen.js';
 import { RealtimeChartTab } from './components/RealtimeChartTab.js';
 import { ScannerTab } from './components/ScannerTab.js';
 import { SettingsAndHistoryTab } from './components/SettingsAndHistoryTab.js';
 import { TopBar } from './components/TopBar.js';
 import { useDashboard } from './hooks/useDashboard.js';
-import { api } from './lib/api.js';
+import { api, setAuthToken, setUnauthorizedHandler } from './lib/api.js';
 
 type BaseTabId = 'overview' | 'scanner' | 'news' | 'backtest' | 'settings';
 type TabId = BaseTabId | 'chart';
@@ -31,6 +32,28 @@ const TABS: Array<{ id: BaseTabId; label: string; icon: typeof LayoutDashboard }
 ];
 
 export function App() {
+  // Always starts locked (in-memory only) so every new visit or page refresh requires PIN
+  const [authToken, setAuthTokenState] = useState<string | null>(null);
+  const [isDefaultPin, setIsDefaultPin] = useState(false);
+
+  const handleLock = useCallback(() => {
+    setAuthToken(null);
+    setAuthTokenState(null);
+    setActiveChartSymbol(null);
+    setChartData(null);
+  }, []);
+
+  const handleUnlocked = useCallback((session: AuthVerifyResponse) => {
+    setAuthToken(session.token);
+    setAuthTokenState(session.token);
+    setIsDefaultPin(session.isDefaultPin);
+  }, []);
+
+  useEffect(() => {
+    setUnauthorizedHandler(handleLock);
+    return () => setUnauthorizedHandler(null);
+  }, [handleLock]);
+
   const {
     snapshot,
     wsConnected,
@@ -46,7 +69,7 @@ export function App() {
     closePosition,
     resetPaper,
     saveSettings,
-  } = useDashboard();
+  } = useDashboard(authToken, handleLock);
 
   const [tab, setTab] = useState<TabId>('overview');
   const [previousTab, setPreviousTab] = useState<BaseTabId>('overview');
@@ -74,7 +97,7 @@ export function App() {
   };
 
   useEffect(() => {
-    if (!activeChartSymbol) return;
+    if (!authToken || !activeChartSymbol) return;
     let cancelled = false;
     setChartLoading(true);
     void api
@@ -102,7 +125,11 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeChartSymbol, interval]);
+  }, [activeChartSymbol, authToken, interval]);
+
+  if (!authToken) {
+    return <PinLockScreen pinLength={6} onUnlocked={handleUnlocked} />;
+  }
 
   if (loading || !snapshot) {
     return (
@@ -121,6 +148,7 @@ export function App() {
         onStart={startBot}
         onPause={pauseBot}
         onKillSwitch={killSwitch}
+        onLock={handleLock}
       />
 
       <nav className="border-b border-slate-800/80 bg-[#0A0F1A]">
@@ -242,9 +270,11 @@ export function App() {
           <SettingsAndHistoryTab
             snapshot={snapshot}
             busyAction={busyAction}
+            isDefaultPin={isDefaultPin}
             onSaveSettings={saveSettings}
             onResetPaper={resetPaper}
             onOpenChart={openRealtimeChart}
+            onPinChanged={handleUnlocked}
           />
         )}
       </main>

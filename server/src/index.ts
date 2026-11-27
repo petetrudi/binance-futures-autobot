@@ -8,6 +8,7 @@ import express from 'express';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { TradingMode, WsMessage } from '@bot/shared';
 import { createApiRouter } from './api/routes.js';
+import { PinAuthService } from './auth/pinAuth.js';
 import { BotDatabase } from './db/database.js';
 import { BotOrchestrator } from './engine/botOrchestrator.js';
 import { BinanceFuturesClient } from './market/binanceClient.js';
@@ -29,6 +30,7 @@ const envModeOverride: TradingMode | undefined =
 
 const dbPath = path.join(rootDir, 'data', 'bot.sqlite');
 const db = new BotDatabase(dbPath);
+const pinAuth = new PinAuthService(db, { envPin: process.env.DASHBOARD_PIN });
 
 const initialMode = envModeOverride ?? db.getTradingMode();
 const fapiBaseUrl = process.env.BINANCE_FAPI_BASE_URL ?? '';
@@ -69,7 +71,7 @@ const orchestrator = new BotOrchestrator(
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
-app.use('/api', createApiRouter(orchestrator, db));
+app.use('/api', createApiRouter(orchestrator, db, pinAuth));
 
 // Serve built web frontend in production if present
 const webDistDir = path.join(rootDir, 'web', 'dist');
@@ -86,21 +88,34 @@ if (fs.existsSync(webDistDir)) {
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
+const wsTokens = new WeakMap<WebSocket, string>();
 
 function broadcast(msg: WsMessage): void {
   const payload = JSON.stringify(msg);
   for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
+    if (client.readyState !== WebSocket.OPEN) continue;
+    const token = wsTokens.get(client);
+    if (!pinAuth.verifyToken(token)) {
+      client.close(4401, 'Unauthorized');
+      continue;
     }
+    client.send(payload);
   }
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const reqUrl = new URL(req.url ?? '/ws', `http://${req.headers.host || 'localhost'}`);
+  const token = reqUrl.searchParams.get('token') ?? '';
+  if (!pinAuth.verifyToken(token)) {
+    ws.close(4401, 'Unauthorized');
+    return;
+  }
+  wsTokens.set(ws, token);
+
   void (async () => {
     try {
       const snapshot = await orchestrator.getDashboardSnapshot();
-      if (ws.readyState === WebSocket.OPEN) {
+      if (ws.readyState === WebSocket.OPEN && pinAuth.verifyToken(token)) {
         const msg: WsMessage = { type: 'snapshot', data: snapshot };
         ws.send(JSON.stringify(msg));
       }
